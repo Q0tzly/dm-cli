@@ -33,6 +33,11 @@ Opening a project starts a subshell in the repository directory, marks it
 activated, and injects `DM_PROJECT=owner/repo`. Closing a project marks it local
 again and removes configured cache directories.
 
+`dm` runs `ghq` from your home directory so relative `ghq.root` values such as
+`dev` resolve to `~/dev`, not the directory where `dm` was launched. Before
+opening, closing, or cleaning a repository, `dm` warns when the relevant git
+worktree has unstaged or untracked changes.
+
 ## Data And Config
 
 - Project history: `~/.local/share/dm/projects.json`

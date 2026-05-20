@@ -2,6 +2,7 @@ use crate::cache::{clean_project, format_bytes, progress_bar, scan_project_cache
 use crate::cli::{Cli, Command, print_help};
 use crate::config::Config;
 use crate::duration::{human_days_since, parse_age};
+use crate::git::unstaged_changes;
 use crate::github::{
     ensure_local_repo, list_local_repositories, list_remote_repositories, resolve_project,
 };
@@ -13,6 +14,7 @@ use crate::store::ProjectStore;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Parser;
+use std::env;
 use std::io::{self, Write};
 
 pub fn run() -> Result<()> {
@@ -34,6 +36,11 @@ pub fn run() -> Result<()> {
 }
 
 fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
+    warn_about_unstaged_changes(
+        &env::current_dir().context("failed to determine current directory")?,
+        "open another project",
+        true,
+    )?;
     let selection = resolve_project(project)?;
     let path = ensure_local_repo(&selection)?;
     store.upsert_access(&selection.id, &path)?;
@@ -99,6 +106,7 @@ fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool
         return Ok(());
     }
 
+    warn_about_unstaged_changes(&project.path, "close this project", !yes)?;
     let removed = clean_project(&project.path, &config.cache_targets)
         .with_context(|| format!("failed to clean {}", project.id))?;
     projects[project_index].status = ProjectStatus::Local;
@@ -177,6 +185,10 @@ fn clean_projects(
         println!("Cancelled.");
         store.save(&projects)?;
         return Ok(());
+    }
+
+    for project in &selected {
+        warn_about_unstaged_changes(&project.path, "clean this project", !yes)?;
     }
 
     let bar = progress_bar("Cleaning", selected.len() as u64);
@@ -308,4 +320,31 @@ fn confirm(prompt: &str) -> Result<bool> {
         .read_line(&mut input)
         .context("failed to read confirmation")?;
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+fn warn_about_unstaged_changes(
+    path: &std::path::Path,
+    action: &str,
+    require_confirmation: bool,
+) -> Result<()> {
+    let Some(changes) = unstaged_changes(path)? else {
+        return Ok(());
+    };
+
+    println!(
+        "Warning: {} has unstaged or untracked git changes:",
+        changes.root.display()
+    );
+    for entry in changes.entries.iter().take(10) {
+        println!("  {entry}");
+    }
+    if changes.entries.len() > 10 {
+        println!("  ... and {} more", changes.entries.len() - 10);
+    }
+
+    if require_confirmation && !confirm(&format!("Continue to {action}? [y/N] "))? {
+        anyhow::bail!("cancelled because unstaged changes are present");
+    }
+
+    Ok(())
 }

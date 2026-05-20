@@ -3,6 +3,7 @@ mod cache;
 mod cli;
 mod config;
 mod duration;
+mod git;
 mod github;
 mod paths;
 mod project;

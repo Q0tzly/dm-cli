@@ -54,6 +54,7 @@ pub fn list_local_repositories() -> Result<Vec<LocalRepo>> {
     let output = Command::new("ghq")
         .arg("list")
         .arg("--full-path")
+        .current_dir(ghq_command_dir()?)
         .output()
         .context("failed to run ghq list")?;
 
@@ -82,7 +83,10 @@ pub fn ensure_local_repo(selection: &RepoSelection) -> Result<PathBuf> {
     }
 
     run_status(
-        Command::new("ghq").arg("get").arg(&selection.owner_repo),
+        Command::new("ghq")
+            .arg("get")
+            .arg(&selection.owner_repo)
+            .current_dir(ghq_command_dir()?),
         "failed to clone repository with ghq get",
     )?;
 
@@ -145,6 +149,7 @@ fn ghq_list_exact(id: &str) -> Result<Option<PathBuf>> {
         .arg("--full-path")
         .arg("--exact")
         .arg(id)
+        .current_dir(ghq_command_dir()?)
         .output()
         .context("failed to run ghq list")?;
 
@@ -167,6 +172,10 @@ fn run_status(command: &mut Command, context: &str) -> Result<()> {
         bail!("{context}");
     }
     Ok(())
+}
+
+fn ghq_command_dir() -> Result<PathBuf> {
+    dirs::home_dir().context("could not determine home directory for ghq")
 }
 
 fn local_repo_from_path(path: &Path) -> Option<LocalRepo> {
