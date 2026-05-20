@@ -17,15 +17,21 @@ subshell, records access history, and helps clean stale build caches such as
 ```sh
 dm
 dm list
-dm owner/repo
-dm cd owner/repo
+dm l
+dm list --all
+dm open owner/repo
+dm o owner/repo
+dm close owner/repo
+dm c owner/repo --yes
 dm clean
 dm clean --older-than 14d
 dm clean --older-than 2w --yes
 ```
 
-Opening a project starts a subshell in the repository directory and injects
-`DM_PROJECT=owner/repo`.
+Running `dm` without arguments prints help. Use `dm list` to open the dashboard.
+Opening a project starts a subshell in the repository directory, marks it
+activated, and injects `DM_PROJECT=owner/repo`. Closing a project marks it local
+again and removes configured cache directories.
 
 ## Data And Config
 

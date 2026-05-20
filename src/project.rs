@@ -8,6 +8,16 @@ pub struct Project {
     pub path: PathBuf,
     pub last_accessed_at: DateTime<Utc>,
     pub cache_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub status: ProjectStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectStatus {
+    Activated,
+    #[default]
+    Local,
 }
 
 impl Project {
@@ -17,6 +27,7 @@ impl Project {
             path,
             last_accessed_at: Utc::now(),
             cache_size_bytes: None,
+            status: ProjectStatus::Activated,
         }
     }
 

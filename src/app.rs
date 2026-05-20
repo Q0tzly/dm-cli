@@ -1,11 +1,13 @@
 use crate::cache::{clean_project, format_bytes, progress_bar, scan_project_cache_size};
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, print_help};
 use crate::config::Config;
 use crate::duration::{human_days_since, parse_age};
-use crate::github::{ensure_local_repo, resolve_project};
+use crate::github::{
+    ensure_local_repo, list_local_repositories, list_remote_repositories, resolve_project,
+};
 use crate::paths::XdgPathProvider;
-use crate::project::Project;
-use crate::select::choose_many;
+use crate::project::{Project, ProjectStatus};
+use crate::select::{choose_many, choose_one};
 use crate::shell::open_subshell;
 use crate::store::ProjectStore;
 use anyhow::{Context, Result};
@@ -20,18 +22,14 @@ pub fn run() -> Result<()> {
     let store = ProjectStore::new(&paths)?;
 
     match cli.command {
+        Some(Command::Open { project }) => open_project(project, &store),
         Some(Command::Cd { project }) => open_project(project, &store),
-        Some(Command::List) => list_projects(&store, &config),
+        Some(Command::List { all }) => list_projects(&store, &config, all),
+        Some(Command::Close { project, yes }) => close_project(&store, &config, &project, yes),
         Some(Command::Clean { older_than, yes }) => {
             clean_projects(&store, &config, older_than, yes)
         }
-        None => {
-            if cli.project.is_some() {
-                open_project(cli.project, &store)
-            } else {
-                list_projects(&store, &config)
-            }
-        }
+        None => print_help(),
     }
 }
 
@@ -43,33 +41,74 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     open_subshell(&selection.owner_repo, &path)
 }
 
-fn list_projects(store: &ProjectStore, config: &Config) -> Result<()> {
+fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) -> Result<()> {
     let mut projects = store.load()?;
     refresh_cache_sizes(&mut projects, config)?;
+    sort_projects_for_dashboard(&mut projects);
     store.save(&projects)?;
 
-    if projects.is_empty() {
-        println!("No managed projects yet. Open one with `dm owner/repo`.");
+    let rows = dashboard_rows(&projects, include_remote)?;
+    if rows.is_empty() {
+        println!("No managed projects yet. Open one with `dm open owner/repo`.");
         return Ok(());
     }
 
-    println!(
-        "{:<36} {:<8} {:>8} {:>12} Path",
-        "Project", "Status", "Age", "Cache"
-    );
-    for project in projects {
-        let age = human_days_since(project.last_accessed_at);
-        let cache = project.cache_size_bytes.unwrap_or(0);
-        println!(
-            "{:<36} {:<8} {:>7}d {:>12} {}",
-            project.owner_repo(),
-            status_for_age(age),
-            age,
-            format_bytes(cache),
-            project.path.display()
-        );
+    let choices: Vec<_> = rows.iter().map(DashboardRow::render).collect();
+    let selected = choose_one("Projects", &choices)?;
+    if let Some(selected) = selected {
+        let project = selected
+            .split_whitespace()
+            .next()
+            .context("selected dashboard row did not contain a project id")?;
+        return open_project(Some(project.to_string()), store);
     }
 
+    println!(
+        "{:<36} {:<10} {:>8} {:>12} Path",
+        "Project", "Status", "Age", "Cache"
+    );
+    for row in rows {
+        println!("{}", row.render());
+    }
+
+    Ok(())
+}
+
+fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool) -> Result<()> {
+    let selection = resolve_project(Some(project.to_string()))?;
+    let mut projects = store.load()?;
+    let Some(project_index) = projects
+        .iter()
+        .position(|project| project.id == selection.id)
+    else {
+        println!("{} is not managed yet.", selection.id);
+        return Ok(());
+    };
+    let project = projects[project_index].clone();
+
+    let size = scan_project_cache_size(&project.path, &config.cache_targets)
+        .with_context(|| format!("failed to scan {}", project.path.display()))?;
+    println!(
+        "Will close {} and remove {} of cache.",
+        project.owner_repo(),
+        format_bytes(size)
+    );
+
+    if !yes && !confirm("Continue? [y/N] ")? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let removed = clean_project(&project.path, &config.cache_targets)
+        .with_context(|| format!("failed to clean {}", project.id))?;
+    projects[project_index].status = ProjectStatus::Local;
+    projects[project_index].cache_size_bytes = Some(0);
+    store.save(&projects)?;
+    println!(
+        "Closed {}. Removed {}.",
+        project.owner_repo(),
+        format_bytes(removed)
+    );
     Ok(())
 }
 
@@ -172,12 +211,93 @@ fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> 
     Ok(())
 }
 
-fn status_for_age(age_days: i64) -> &'static str {
-    match age_days {
-        0..=2 => "Active",
-        3..=13 => "Idle",
-        _ => "Stale",
+fn sort_projects_for_dashboard(projects: &mut [Project]) {
+    projects.sort_by(|left, right| {
+        let left_rank = status_rank(left.status);
+        let right_rank = status_rank(right.status);
+
+        left_rank
+            .cmp(&right_rank)
+            .then_with(|| right.last_accessed_at.cmp(&left.last_accessed_at))
+            .then_with(|| left.owner_repo().cmp(right.owner_repo()))
+    });
+}
+
+fn status_rank(status: ProjectStatus) -> u8 {
+    match status {
+        ProjectStatus::Activated => 0,
+        ProjectStatus::Local => 1,
     }
+}
+
+#[derive(Debug, Clone)]
+struct DashboardRow {
+    project: String,
+    status: String,
+    age: String,
+    cache: String,
+    path: String,
+}
+
+impl DashboardRow {
+    fn render(&self) -> String {
+        format!(
+            "{:<36} {:<10} {:>8} {:>12} {}",
+            self.project, self.status, self.age, self.cache, self.path
+        )
+    }
+}
+
+fn dashboard_rows(projects: &[Project], include_remote: bool) -> Result<Vec<DashboardRow>> {
+    let mut rows = Vec::new();
+    for project in projects {
+        let age = human_days_since(project.last_accessed_at);
+        rows.push(DashboardRow {
+            project: project.owner_repo().to_string(),
+            status: match project.status {
+                ProjectStatus::Activated => "Activated",
+                ProjectStatus::Local => "Local",
+            }
+            .to_string(),
+            age: format!("{age}d"),
+            cache: format_bytes(project.cache_size_bytes.unwrap_or(0)),
+            path: project.path.display().to_string(),
+        });
+    }
+
+    let managed_ids: std::collections::HashSet<_> =
+        projects.iter().map(|project| project.id.as_str()).collect();
+    for repo in list_local_repositories()? {
+        if managed_ids.contains(repo.id.as_str()) {
+            continue;
+        }
+        rows.push(DashboardRow {
+            project: repo.owner_repo,
+            status: "Local".to_string(),
+            age: "-".to_string(),
+            cache: "-".to_string(),
+            path: repo.path.display().to_string(),
+        });
+    }
+
+    if include_remote {
+        let local_ids: std::collections::HashSet<_> =
+            rows.iter().map(|row| row.project.clone()).collect();
+        for repo in list_remote_repositories()? {
+            if local_ids.contains(repo.as_str()) {
+                continue;
+            }
+            rows.push(DashboardRow {
+                project: repo,
+                status: "Remote".to_string(),
+                age: "-".to_string(),
+                cache: "-".to_string(),
+                path: "-".to_string(),
+            });
+        }
+    }
+
+    Ok(rows)
 }
 
 fn confirm(prompt: &str) -> Result<bool> {

@@ -1,5 +1,5 @@
 use crate::paths::PathProvider;
-use crate::project::Project;
+use crate::project::{Project, ProjectStatus};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs;
@@ -55,6 +55,7 @@ impl ProjectStore {
         if let Some(project) = projects.iter_mut().find(|project| project.id == id) {
             project.path = path.to_path_buf();
             project.last_accessed_at = now;
+            project.status = ProjectStatus::Activated;
             let updated = project.clone();
             self.save(&projects)?;
             return Ok(updated);
@@ -66,6 +67,19 @@ impl ProjectStore {
         projects.sort_by(|left, right| left.id.cmp(&right.id));
         self.save(&projects)?;
         Ok(project)
+    }
+
+    #[cfg(test)]
+    pub fn set_status(&self, id: &str, status: ProjectStatus) -> Result<Option<Project>> {
+        let mut projects = self.load()?;
+        let updated = if let Some(project) = projects.iter_mut().find(|project| project.id == id) {
+            project.status = status;
+            Some(project.clone())
+        } else {
+            None
+        };
+        self.save(&projects)?;
+        Ok(updated)
     }
 }
 
@@ -114,5 +128,22 @@ mod tests {
         let projects = store.load().unwrap();
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].path, temp.path().join("renamed"));
+    }
+
+    #[test]
+    fn set_status_updates_existing_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProjectStore::at(temp.path().join("projects.json"));
+
+        store
+            .upsert_access("github.com/acme/app", &temp.path().join("app"))
+            .unwrap();
+        let project = store
+            .set_status("github.com/acme/app", ProjectStatus::Local)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(project.status, ProjectStatus::Local);
+        assert_eq!(store.load().unwrap()[0].status, ProjectStatus::Local);
     }
 }

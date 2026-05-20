@@ -1,13 +1,20 @@
 use crate::select::choose_one;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoSelection {
     pub id: String,
     pub owner_repo: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRepo {
+    pub id: String,
+    pub owner_repo: String,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +37,43 @@ pub fn resolve_project(project: Option<String>) -> Result<RepoSelection> {
     let repos = github_repos(&owner)?;
     let repo = choose_one("Repository", &repos)?.context("no repository selected")?;
     Ok(normalize_project_id(&repo))
+}
+
+pub fn list_remote_repositories() -> Result<Vec<String>> {
+    let owners = github_owners()?;
+    let mut repos = Vec::new();
+    for owner in owners {
+        repos.extend(github_repos(&owner)?);
+    }
+    repos.sort();
+    repos.dedup();
+    Ok(repos)
+}
+
+pub fn list_local_repositories() -> Result<Vec<LocalRepo>> {
+    let output = Command::new("ghq")
+        .arg("list")
+        .arg("--full-path")
+        .output()
+        .context("failed to run ghq list")?;
+
+    if !output.status.success() {
+        bail!(
+            "ghq list failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let raw = String::from_utf8(output.stdout).context("ghq output was not UTF-8")?;
+    let mut repos = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| local_repo_from_path(Path::new(line)))
+        .collect::<Vec<_>>();
+    repos.sort_by(|left, right| left.owner_repo.cmp(&right.owner_repo));
+    repos.dedup_by(|left, right| left.id == right.id);
+    Ok(repos)
 }
 
 pub fn ensure_local_repo(selection: &RepoSelection) -> Result<PathBuf> {
@@ -125,6 +169,23 @@ fn run_status(command: &mut Command, context: &str) -> Result<()> {
     Ok(())
 }
 
+fn local_repo_from_path(path: &Path) -> Option<LocalRepo> {
+    let parts: Vec<_> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
+    let github_index = parts.iter().position(|part| part == "github.com")?;
+    let owner = parts.get(github_index + 1)?;
+    let repo = parts.get(github_index + 2)?;
+    let owner_repo = format!("{owner}/{repo}");
+
+    Some(LocalRepo {
+        id: format!("github.com/{owner_repo}"),
+        owner_repo,
+        path: path.to_path_buf(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +207,13 @@ mod tests {
             normalize_project_id("git@github.com:owner/repo.git").owner_repo,
             "owner/repo"
         );
+    }
+
+    #[test]
+    fn infers_local_repo_from_ghq_path() {
+        let repo = local_repo_from_path(Path::new("/work/github.com/acme/app")).unwrap();
+
+        assert_eq!(repo.id, "github.com/acme/app");
+        assert_eq!(repo.owner_repo, "acme/app");
     }
 }
