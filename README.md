@@ -19,6 +19,7 @@ dm
 dm list
 dm l
 dm list --all
+dm list -a
 dm open owner/repo
 dm o owner/repo
 dm close owner/repo

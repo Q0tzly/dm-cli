@@ -1,5 +1,5 @@
 use crate::select::choose_one;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -42,8 +42,17 @@ pub fn resolve_project(project: Option<String>) -> Result<RepoSelection> {
 pub fn list_remote_repositories() -> Result<Vec<String>> {
     let owners = github_owners()?;
     let mut repos = Vec::new();
-    for owner in owners {
-        repos.extend(github_repos(&owner)?);
+    let handles = owners
+        .into_iter()
+        .map(|owner| std::thread::spawn(move || github_repos(&owner)))
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        repos.extend(
+            handle
+                .join()
+                .map_err(|_| anyhow!("repository listing worker panicked"))??,
+        );
     }
     repos.sort();
     repos.dedup();
