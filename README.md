@@ -28,10 +28,11 @@ dm clean --older-than 14d
 dm clean --older-than 2w --yes
 ```
 
-Running `dm` without arguments prints help. Use `dm list` to open the dashboard.
-Opening a project starts a subshell in the repository directory, marks it
-activated, and injects `DM_PROJECT=owner/repo`. Closing a project marks it local
-again and removes configured cache directories.
+Running `dm` without arguments opens the interactive repository dashboard. Use
+`dm list` when you only want to print the repository list to the shell. Opening
+a project starts a subshell in the repository directory, marks it activated, and
+injects `DM_PROJECT=owner/repo`. Closing a project marks it local again and
+removes configured cache directories.
 
 `dm` runs `ghq` from your home directory so relative `ghq.root` values such as
 `dev` resolve to `~/dev`, not the directory where `dm` was launched. Before

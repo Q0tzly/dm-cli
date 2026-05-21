@@ -1,5 +1,5 @@
 use crate::cache::{clean_project, format_bytes, progress_bar, scan_project_cache_size};
-use crate::cli::{Cli, Command, print_help};
+use crate::cli::{Cli, Command};
 use crate::config::Config;
 use crate::duration::{human_days_since, parse_age};
 use crate::git::unstaged_changes;
@@ -31,7 +31,7 @@ pub fn run() -> Result<()> {
         Some(Command::Clean { older_than, yes }) => {
             clean_projects(&store, &config, older_than, yes)
         }
-        None => print_help(),
+        None => dashboard_projects(&store, &config),
     }
 }
 
@@ -49,14 +49,15 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
 }
 
 fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) -> Result<()> {
-    let mut projects = store.load()?;
-    refresh_cache_sizes(&mut projects, config)?;
-    sort_projects_for_dashboard(&mut projects);
-    store.save(&projects)?;
+    let rows = load_dashboard_rows(store, config, include_remote)?;
+    print_dashboard_rows(&rows);
+    Ok(())
+}
 
-    let rows = dashboard_rows(&projects, include_remote)?;
+fn dashboard_projects(store: &ProjectStore, config: &Config) -> Result<()> {
+    let rows = load_dashboard_rows(store, config, false)?;
     if rows.is_empty() {
-        println!("No managed projects yet. Open one with `dm open owner/repo`.");
+        println!("No projects yet. Open one with `dm open owner/repo`.");
         return Ok(());
     }
 
@@ -70,6 +71,28 @@ fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) ->
         return open_project(Some(project.to_string()), store);
     }
 
+    Ok(())
+}
+
+fn load_dashboard_rows(
+    store: &ProjectStore,
+    config: &Config,
+    include_remote: bool,
+) -> Result<Vec<DashboardRow>> {
+    let mut projects = store.load()?;
+    refresh_cache_sizes(&mut projects, config)?;
+    sort_projects_for_dashboard(&mut projects);
+    store.save(&projects)?;
+
+    dashboard_rows(&projects, include_remote)
+}
+
+fn print_dashboard_rows(rows: &[DashboardRow]) {
+    if rows.is_empty() {
+        println!("No managed projects yet. Open one with `dm open owner/repo`.");
+        return;
+    }
+
     println!(
         "{:<36} {:<10} {:>8} {:>12} Path",
         "Project", "Status", "Age", "Cache"
@@ -77,8 +100,6 @@ fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) ->
     for row in rows {
         println!("{}", row.render());
     }
-
-    Ok(())
 }
 
 fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool) -> Result<()> {
