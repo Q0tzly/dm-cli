@@ -1,4 +1,6 @@
-use crate::cache::{clean_project, format_bytes, progress_bar, scan_project_cache_size};
+use crate::cache::{
+    clean_project, format_bytes, progress_bar, progress_spinner, scan_project_cache_size,
+};
 use crate::cli::{Cli, Command};
 use crate::config::Config;
 use crate::duration::{human_days_since, parse_age};
@@ -228,7 +230,7 @@ fn clean_projects(
 }
 
 fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> {
-    let bar = progress_bar("Scanning cache", projects.len() as u64);
+    let bar = progress_bar("Scanning local cache", projects.len() as u64);
     for project in projects {
         project.cache_size_bytes = if project.path.exists() {
             Some(
@@ -316,7 +318,10 @@ fn dashboard_rows(projects: &[Project], include_remote: bool) -> Result<Vec<Dash
     if include_remote {
         let local_ids: std::collections::HashSet<_> =
             rows.iter().map(|row| row.project.clone()).collect();
-        for repo in list_remote_repositories()? {
+        let spinner = progress_spinner("Fetching remote repositories from GitHub");
+        let remote_repositories = list_remote_repositories();
+        spinner.finish_and_clear();
+        for repo in remote_repositories? {
             if local_ids.contains(repo.as_str()) {
                 continue;
             }

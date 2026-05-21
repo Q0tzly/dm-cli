@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 pub fn scan_project_cache_size(project_root: &Path, targets: &[String]) -> Result<u64> {
     let total = Arc::new(AtomicU64::new(0));
@@ -107,6 +108,19 @@ pub fn progress_bar(message: &str, len: u64) -> ProgressBar {
             .tick_strings(&["-", "\\", "|", "/"]),
     );
     bar.set_message(message.to_string());
+    bar.enable_steady_tick(Duration::from_millis(120));
+    bar
+}
+
+pub fn progress_spinner(message: &str) -> ProgressBar {
+    let bar = ProgressBar::new_spinner();
+    bar.set_style(
+        ProgressStyle::with_template("{spinner:.green} {msg} [{elapsed_precise}]")
+            .unwrap()
+            .tick_strings(&["-", "\\", "|", "/"]),
+    );
+    bar.set_message(message.to_string());
+    bar.enable_steady_tick(Duration::from_millis(120));
     bar
 }
 
