@@ -55,4 +55,7 @@ pub enum Command {
     /// Show git status of managed repositories.
     #[command(alias = "s")]
     Status,
+    /// Pull latest changes in activated repositories.
+    #[command(alias = "sy")]
+    Sync,
 }

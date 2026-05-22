@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -115,6 +115,26 @@ pub fn unpulled_commits(path: &Path) -> Result<Option<UnpulledCommits>> {
     } else {
         Ok(Some(UnpulledCommits { root, entries }))
     }
+}
+
+pub fn pull_ff_only(path: &Path) -> Result<bool> {
+    let root = repo_root(path)?.context("not a git repository")?;
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .arg("pull")
+        .arg("--ff-only")
+        .output()
+        .with_context(|| format!("failed to pull in {}", root.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("git pull failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(!stdout.contains("Already up to date"))
 }
 
 fn repo_root(path: &Path) -> Result<Option<PathBuf>> {

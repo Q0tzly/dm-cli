@@ -4,7 +4,7 @@ use crate::cache::{
 use crate::cli::{Cli, Command};
 use crate::config::Config;
 use crate::duration::{human_days_since, parse_age};
-use crate::git::{uncommitted_changes, unpulled_commits, unpushed_commits};
+use crate::git::{pull_ff_only, uncommitted_changes, unpulled_commits, unpushed_commits};
 use crate::github::{
     ensure_local_repo, list_local_repositories, list_remote_repositories, resolve_project,
 };
@@ -32,6 +32,7 @@ pub fn run() -> Result<()> {
         Some(Command::Close { project, yes }) => close_project(&store, &config, &project, yes),
         Some(Command::Clean { all, yes }) => clean_projects(&store, &config, all, yes),
         Some(Command::Status) => status_projects(&store, &config),
+        Some(Command::Sync) => sync_projects(&store),
         None => dashboard_projects(&store, &config),
     }
 }
@@ -227,6 +228,52 @@ fn clean_projects(
     refresh_cache_sizes(&mut projects, config)?;
     store.save(&projects)?;
     println!("Removed {}.", format_bytes(removed_total));
+    Ok(())
+}
+
+fn sync_projects(store: &ProjectStore) -> Result<()> {
+    let projects = store.load()?;
+    let activated: Vec<_> = projects
+        .iter()
+        .filter(|p| p.status == ProjectStatus::Activated)
+        .collect();
+
+    if activated.is_empty() {
+        println!("No activated projects to sync.");
+        return Ok(());
+    }
+
+    let bar = progress_bar("Syncing", activated.len() as u64);
+    let mut ok = 0u32;
+    let mut fail = 0u32;
+    for project in &activated {
+        let result = pull_ff_only(&project.path);
+        match &result {
+            Ok(true) => ok += 1,
+            Ok(false) => {}
+            Err(_) => fail += 1,
+        }
+        let symbol = match &result {
+            Ok(true) => "↑",
+            Ok(false) => "·",
+            Err(_) => "✗",
+        };
+        println!("  {symbol} {}", project.owner_repo());
+        bar.inc(1);
+    }
+    bar.finish_and_clear();
+
+    let parts = vec![
+        Some(format!("{ok} updated")).filter(|_| ok > 0),
+        Some(format!("{fail} failed")).filter(|_| fail > 0),
+    ];
+    let summary: Vec<_> = parts.into_iter().flatten().collect();
+    if summary.is_empty() {
+        println!("All up to date.");
+    } else {
+        println!("{}", summary.join(", "));
+    }
+
     Ok(())
 }
 
