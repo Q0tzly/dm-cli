@@ -258,20 +258,31 @@ fn sync_projects(store: &ProjectStore) -> Result<()> {
     }
 
     let bar = progress_bar("Syncing", activated.len() as u64);
+
+    let results: Vec<(String, Result<bool>)> = std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for project in &activated {
+            let name = project.owner_repo().to_string();
+            let path = project.path.clone();
+            handles.push(s.spawn(move || (name, pull_ff_only(&path))));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
     let mut ok = 0u32;
     let mut fail = 0u32;
-    for project in &activated {
-        match pull_ff_only(&project.path) {
+    for (name, result) in &results {
+        match result {
             Ok(true) => {
                 ok += 1;
-                println!("  ↑ {}", project.owner_repo());
+                println!("  ↑ {name}");
             }
             Ok(false) => {
-                println!("  · {}", project.owner_repo());
+                println!("  · {name}");
             }
             Err(e) => {
                 fail += 1;
-                println!("  ✗ {}: {e}", project.owner_repo());
+                println!("  ✗ {name}: {e}");
             }
         }
         bar.inc(1);
@@ -320,26 +331,40 @@ fn status_projects(store: &ProjectStore, config: &Config) -> Result<()> {
     store.save(&projects)?;
 
     let bar = progress_bar("Checking git status", projects.len() as u64);
+
+    struct GitCounts {
+        uncommitted: usize,
+        ahead: usize,
+        behind: usize,
+    }
+
+    let counts: Vec<GitCounts> = std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for project in &projects {
+            let path = project.path.clone();
+            handles.push(s.spawn(move || GitCounts {
+                uncommitted: uncommitted_changes(&path)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.entries.len())
+                    .unwrap_or(0),
+                ahead: unpushed_commits(&path)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.entries.len())
+                    .unwrap_or(0),
+                behind: unpulled_commits(&path)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.entries.len())
+                    .unwrap_or(0),
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
     let mut rows: Vec<StatusRow> = Vec::new();
-    for project in &projects {
-        let uncommitted = uncommitted_changes(&project.path)
-            .ok()
-            .flatten()
-            .map(|c| c.entries.len())
-            .unwrap_or(0);
-
-        let ahead = unpushed_commits(&project.path)
-            .ok()
-            .flatten()
-            .map(|c| c.entries.len())
-            .unwrap_or(0);
-
-        let behind = unpulled_commits(&project.path)
-            .ok()
-            .flatten()
-            .map(|c| c.entries.len())
-            .unwrap_or(0);
-
+    for (project, c) in projects.iter().zip(counts.iter()) {
         rows.push(StatusRow {
             project: project.owner_repo().to_string(),
             status: match project.status {
@@ -347,9 +372,9 @@ fn status_projects(store: &ProjectStore, config: &Config) -> Result<()> {
                 ProjectStatus::Local => "Local",
             }
             .to_string(),
-            uncommitted,
-            ahead,
-            behind,
+            uncommitted: c.uncommitted,
+            ahead: c.ahead,
+            behind: c.behind,
             cache: format_bytes(project.cache_size_bytes.unwrap_or(0)),
             path: project.path.display().to_string(),
         });
