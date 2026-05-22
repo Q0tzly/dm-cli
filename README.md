@@ -17,7 +17,7 @@ subshell, records access history, and helps clean stale build caches such as
 Add to your `.zshrc` (or `.bashrc`):
 
 ```sh
-eval "$(dm completion zsh)"
+eval "$(dm init zsh)"
 ```
 
 Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
@@ -47,7 +47,7 @@ project with `fzf` (or a numbered prompt) to open it.
 | `dm prune` | `p` | Remove from the project list any projects whose directories no longer exist. |
 | `dm log` | `h` | Show project access history sorted by last access time. |
 | `dm config` | `cfg` | Show the config file path and contents. `--edit` opens it in `$EDITOR`. |
-| `dm completion <shell>` | — | Generate shell completion script (`bash`, `zsh`, `fish`, `powershell`, `elvish`). |
+| `dm init <shell>` | — | Generate shell completion script (`bash`, `zsh`, `fish`, `powershell`, `elvish`). |
 
 ### Examples
 
@@ -94,8 +94,8 @@ dm h
 dm config
 dm config --edit
 
-# Shell completion
-eval "$(dm completion bash)"
+# Shell init
+eval "$(dm init bash)"
 ```
 
 ### What happens when you open a project

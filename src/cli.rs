@@ -77,7 +77,7 @@ pub enum Command {
     #[command(alias = "h")]
     Log,
     /// Generate shell completion script.
-    Completion {
+    Init {
         /// Shell to generate completions for.
         shell: Shell,
     },

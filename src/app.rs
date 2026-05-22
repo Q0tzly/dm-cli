@@ -37,7 +37,7 @@ pub fn run() -> Result<()> {
         Some(Command::Config { edit }) => show_config(&paths, edit),
         Some(Command::Prune { yes }) => prune_projects(&store, yes),
         Some(Command::Log) => log_projects(&store),
-        Some(Command::Completion { shell }) => {
+        Some(Command::Init { shell }) => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
