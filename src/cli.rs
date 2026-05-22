@@ -52,4 +52,7 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Show git status of managed repositories.
+    #[command(alias = "s")]
+    Status,
 }

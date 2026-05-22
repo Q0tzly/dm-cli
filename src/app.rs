@@ -4,7 +4,7 @@ use crate::cache::{
 use crate::cli::{Cli, Command};
 use crate::config::Config;
 use crate::duration::{human_days_since, parse_age};
-use crate::git::{uncommitted_changes, unpushed_commits};
+use crate::git::{uncommitted_changes, unpulled_commits, unpushed_commits};
 use crate::github::{
     ensure_local_repo, list_local_repositories, list_remote_repositories, resolve_project,
 };
@@ -31,6 +31,7 @@ pub fn run() -> Result<()> {
         Some(Command::List { all }) => list_projects(&store, &config, all),
         Some(Command::Close { project, yes }) => close_project(&store, &config, &project, yes),
         Some(Command::Clean { all, yes }) => clean_projects(&store, &config, all, yes),
+        Some(Command::Status) => status_projects(&store, &config),
         None => dashboard_projects(&store, &config),
     }
 }
@@ -244,6 +245,89 @@ fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> 
     }
     bar.finish_and_clear();
     Ok(())
+}
+
+fn status_projects(store: &ProjectStore, config: &Config) -> Result<()> {
+    let mut projects = store.load()?;
+    if projects.is_empty() {
+        println!("No managed projects.");
+        return Ok(());
+    }
+
+    refresh_cache_sizes(&mut projects, config)?;
+
+    let bar = progress_bar("Checking git status", projects.len() as u64);
+    let mut rows: Vec<StatusRow> = Vec::new();
+    for project in &projects {
+        let uncommitted = uncommitted_changes(&project.path)
+            .ok()
+            .flatten()
+            .map(|c| c.entries.len())
+            .unwrap_or(0);
+
+        let ahead = unpushed_commits(&project.path)
+            .ok()
+            .flatten()
+            .map(|c| c.entries.len())
+            .unwrap_or(0);
+
+        let behind = unpulled_commits(&project.path)
+            .ok()
+            .flatten()
+            .map(|c| c.entries.len())
+            .unwrap_or(0);
+
+        rows.push(StatusRow {
+            project: project.owner_repo().to_string(),
+            status: match project.status {
+                ProjectStatus::Activated => "Activated",
+                ProjectStatus::Local => "Local",
+            }
+            .to_string(),
+            uncommitted,
+            ahead,
+            behind,
+            cache: format_bytes(project.cache_size_bytes.unwrap_or(0)),
+            path: project.path.display().to_string(),
+        });
+        bar.inc(1);
+    }
+    bar.finish_and_clear();
+
+    println!(
+        "{:<36} {:<10} {:>6} {:>5} {:>5} {:>10} Path",
+        "Project", "Status", "Dirty", "Ahead", "Behind", "Cache"
+    );
+    for row in &rows {
+        println!("{}", row.render());
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct StatusRow {
+    project: String,
+    status: String,
+    uncommitted: usize,
+    ahead: usize,
+    behind: usize,
+    cache: String,
+    path: String,
+}
+
+impl StatusRow {
+    fn render(&self) -> String {
+        let dirty = if self.uncommitted > 0 {
+            self.uncommitted.to_string()
+        } else {
+            "clean".to_string()
+        };
+        format!(
+            "{:<36} {:<10} {:>6} {:>5} {:>5} {:>10} {}",
+            self.project, self.status, dirty, self.ahead, self.behind, self.cache, self.path
+        )
+    }
 }
 
 fn sort_projects_for_dashboard(projects: &mut [Project]) {
