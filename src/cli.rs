@@ -3,7 +3,7 @@ use clap_complete::Shell;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "dm",
+    name = "rem",
     version,
     about = "Open the interactive repository dashboard, or run a repository command"
 )]

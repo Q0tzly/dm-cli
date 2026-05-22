@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_config_path_under_dm_config_dir() {
+    fn resolves_config_path_under_repom_config_dir() {
         let paths = FixedPathProvider {
             data: PathBuf::from("/tmp/data"),
             config: PathBuf::from("/tmp/config/dm"),

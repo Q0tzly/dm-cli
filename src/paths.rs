@@ -11,11 +11,11 @@ pub struct XdgPathProvider;
 
 impl PathProvider for XdgPathProvider {
     fn data_dir(&self) -> Result<PathBuf> {
-        base_dir("XDG_DATA_HOME", ".local/share").map(|path| path.join("dm"))
+        base_dir("XDG_DATA_HOME", ".local/share").map(|path| path.join("repom"))
     }
 
     fn config_dir(&self) -> Result<PathBuf> {
-        base_dir("XDG_CONFIG_HOME", ".config").map(|path| path.join("dm"))
+        base_dir("XDG_CONFIG_HOME", ".config").map(|path| path.join("repom"))
     }
 }
 

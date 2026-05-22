@@ -93,7 +93,7 @@ mod tests {
     use crate::paths::testsupport::FixedPathProvider;
 
     #[test]
-    fn resolves_projects_path_under_dm_data_dir() {
+    fn resolves_projects_path_under_repom_data_dir() {
         let paths = FixedPathProvider {
             data: PathBuf::from("/tmp/data/dm"),
             config: PathBuf::from("/tmp/config/dm"),
