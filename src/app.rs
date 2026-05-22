@@ -90,21 +90,7 @@ fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) ->
 
 fn dashboard_projects(store: &ProjectStore, config: &Config) -> Result<()> {
     let rows = load_dashboard_rows(store, config, false)?;
-    if rows.is_empty() {
-        println!("No projects yet. Open one with `dm open owner/repo`.");
-        return Ok(());
-    }
-
-    let choices: Vec<_> = rows.iter().map(DashboardRow::render).collect();
-    let selected = choose_one("Projects", &choices)?;
-    if let Some(selected) = selected {
-        let project = selected
-            .split_whitespace()
-            .next()
-            .context("selected dashboard row did not contain a project id")?;
-        return open_project(Some(project.to_string()), store);
-    }
-
+    print_dashboard_rows(&rows);
     Ok(())
 }
 
