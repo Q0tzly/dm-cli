@@ -7,6 +7,7 @@ use crate::duration::{human_days_since, parse_age};
 use crate::git::{pull_ff_only, uncommitted_changes, unpulled_commits, unpushed_commits};
 use crate::github::{
     ensure_local_repo, list_local_repositories, list_remote_repositories, resolve_project,
+    RepoSelection,
 };
 use crate::paths::XdgPathProvider;
 use crate::project::{Project, ProjectStatus};
@@ -27,8 +28,8 @@ pub fn run() -> Result<()> {
     let store = ProjectStore::new(&paths)?;
 
     match cli.command {
-        Some(Command::Open { project }) => open_project(project, &store),
-        Some(Command::Cd { project }) => open_project(project, &store),
+        Some(Command::Open { project, all }) => open_project(project, all, &store),
+        Some(Command::Cd { project }) => open_project(project, false, &store),
         Some(Command::List { all }) => list_projects(&store, &config, all),
         Some(Command::Close { project, yes }) => close_project(&store, &config, &project, yes),
         Some(Command::Clean { all, yes }) => clean_projects(&store, &config, all, yes),
@@ -47,7 +48,7 @@ pub fn run() -> Result<()> {
     }
 }
 
-fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
+fn open_project(project: Option<String>, include_remote: bool, store: &ProjectStore) -> Result<()> {
     warn_about_uncommitted_changes(
         &env::current_dir().context("failed to determine current directory")?,
         "open another project",
@@ -55,7 +56,7 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     )?;
 
     let selection = if let Some(p) = project {
-        resolve_project(Some(p))?
+        search_and_select_project(&p, include_remote, store)?
     } else {
         let projects = store.load()?;
         if projects.is_empty() {
@@ -80,6 +81,98 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     store.upsert_access(&selection.id, &path)?;
     println!("Opening {} at {}", selection.id, path.display());
     open_subshell(&selection.owner_repo, &path)
+}
+
+fn search_and_select_project(
+    query: &str,
+    include_remote: bool,
+    store: &ProjectStore,
+) -> Result<RepoSelection> {
+    let query_lower = query.to_lowercase();
+
+    let local_projects = store.load()?;
+    let mut matches: Vec<SearchCandidate> = local_projects
+        .iter()
+        .filter(|p| {
+            p.id.to_lowercase().contains(&query_lower)
+                || p.owner_repo().to_lowercase().contains(&query_lower)
+        })
+        .map(|p| SearchCandidate {
+            id: p.id.clone(),
+            owner_repo: p.owner_repo().to_string(),
+            path: Some(p.path.display().to_string()),
+            is_local: true,
+        })
+        .collect();
+
+    if include_remote {
+        let spinner = progress_spinner("Searching remote repositories");
+        let remote_repos = list_remote_repositories()?;
+        spinner.finish_and_clear();
+
+        let local_ids: std::collections::HashSet<_> =
+            local_projects.iter().map(|p| p.id.as_str()).collect();
+
+        for repo in remote_repos {
+            if repo.to_lowercase().contains(&query_lower)
+                && !local_ids.contains(repo.as_str())
+            {
+                matches.push(SearchCandidate {
+                    id: format!("github.com/{}", repo),
+                    owner_repo: repo,
+                    path: None,
+                    is_local: false,
+                });
+            }
+        }
+    }
+
+    match matches.len() {
+        0 => {
+            if include_remote {
+                anyhow::bail!("no projects found matching '{}' (local and remote)", query)
+            } else {
+                anyhow::bail!("no local projects found matching '{}'; use -a to include remote", query)
+            }
+        }
+        1 => {
+            let candidate = &matches[0];
+            Ok(RepoSelection {
+                id: candidate.id.clone(),
+                owner_repo: candidate.owner_repo.clone(),
+            })
+        }
+        _ => {
+            let choices: Vec<String> = matches
+                .iter()
+                .map(|c| {
+                    if let Some(path) = &c.path {
+                        format!("{}  {}", c.owner_repo, path)
+                    } else {
+                        format!("{}  (remote)", c.owner_repo)
+                    }
+                })
+                .collect();
+
+            let prompt = if include_remote {
+                "Select project (local + remote)"
+            } else {
+                "Select local project"
+            };
+
+            let selected = choose_one(prompt, &choices)?.context("no project selected")?;
+            let name = selected.split_whitespace().next().unwrap().to_string();
+            resolve_project(Some(name))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SearchCandidate {
+    id: String,
+    owner_repo: String,
+    path: Option<String>,
+    is_local: bool,
 }
 
 fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) -> Result<()> {
@@ -152,14 +245,48 @@ fn print_dashboard_rows(rows: &[DashboardRow]) {
     }
 }
 
-fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool) -> Result<()> {
-    let selection = resolve_project(Some(project.to_string()))?;
+fn close_project(store: &ProjectStore, config: &Config, query: &str, yes: bool) -> Result<()> {
+    let projects = store.load()?;
+    let query_lower = query.to_lowercase();
+
+    let matches: Vec<&Project> = projects
+        .iter()
+        .filter(|p| {
+            p.id.to_lowercase().contains(&query_lower)
+                || p.owner_repo().to_lowercase().contains(&query_lower)
+        })
+        .collect();
+
+    let selected_project = match matches.len() {
+        0 => {
+            anyhow::bail!("no local projects found matching '{}'", query)
+        }
+        1 => matches[0].clone(),
+        _ => {
+            let choices: Vec<String> = matches
+                .iter()
+                .map(|p| format!("{}  {}", p.owner_repo(), p.path.display()))
+                .collect();
+
+            let selected = choose_one("Select project to close", &choices)?
+                .context("no project selected")?;
+            let name = selected.split_whitespace().next().unwrap().to_string();
+            let selection = resolve_project(Some(name))?;
+
+            projects
+                .iter()
+                .find(|p| p.id == selection.id)
+                .context("selected project not found")?
+                .clone()
+        }
+    };
+
     let mut projects = store.load()?;
     let Some(project_index) = projects
         .iter()
-        .position(|project| project.id == selection.id)
+        .position(|p| p.id == selected_project.id)
     else {
-        println!("{} is not managed yet.", selection.id);
+        println!("{} is not managed yet.", selected_project.id);
         return Ok(());
     };
     let project = projects[project_index].clone();

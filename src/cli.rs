@@ -17,8 +17,12 @@ pub enum Command {
     /// Open a repository in a subshell.
     #[command(alias = "o")]
     Open {
-        /// Repository id such as owner/repo or github.com/owner/repo.
+        /// Repository id (supports partial match) such as owner/repo or github.com/owner/repo.
         project: Option<String>,
+
+        /// Include remote repositories from GitHub.
+        #[arg(short, long)]
+        all: bool,
     },
     /// Open a repository in a subshell.
     #[command(hide = true)]
