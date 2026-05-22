@@ -4,7 +4,7 @@ use crate::cache::{
 use crate::cli::{Cli, Command};
 use crate::config::Config;
 use crate::duration::{human_days_since, parse_age};
-use crate::git::unstaged_changes;
+use crate::git::{uncommitted_changes, unpushed_commits};
 use crate::github::{
     ensure_local_repo, list_local_repositories, list_remote_repositories, resolve_project,
 };
@@ -38,7 +38,7 @@ pub fn run() -> Result<()> {
 }
 
 fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
-    warn_about_unstaged_changes(
+    warn_about_uncommitted_changes(
         &env::current_dir().context("failed to determine current directory")?,
         "open another project",
         true,
@@ -129,7 +129,8 @@ fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool
         return Ok(());
     }
 
-    warn_about_unstaged_changes(&project.path, "close this project", !yes)?;
+    warn_about_uncommitted_changes(&project.path, "close this project", !yes)?;
+    warn_about_unpushed_commits(&project.path, "close this project", !yes)?;
     let removed = clean_project(&project.path, &config.cache_targets)
         .with_context(|| format!("failed to clean {}", project.id))?;
     projects[project_index].status = ProjectStatus::Local;
@@ -211,7 +212,7 @@ fn clean_projects(
     }
 
     for project in &selected {
-        warn_about_unstaged_changes(&project.path, "clean this project", !yes)?;
+        warn_about_uncommitted_changes(&project.path, "clean this project", !yes)?;
     }
 
     let bar = progress_bar("Cleaning", selected.len() as u64);
@@ -348,17 +349,17 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
-fn warn_about_unstaged_changes(
+fn warn_about_uncommitted_changes(
     path: &std::path::Path,
     action: &str,
     require_confirmation: bool,
 ) -> Result<()> {
-    let Some(changes) = unstaged_changes(path)? else {
+    let Some(changes) = uncommitted_changes(path)? else {
         return Ok(());
     };
 
     println!(
-        "Warning: {} has unstaged or untracked git changes:",
+        "Warning: {} has uncommitted changes:",
         changes.root.display()
     );
     for entry in changes.entries.iter().take(10) {
@@ -369,7 +370,34 @@ fn warn_about_unstaged_changes(
     }
 
     if require_confirmation && !confirm(&format!("Continue to {action}? [y/N] "))? {
-        anyhow::bail!("cancelled because unstaged changes are present");
+        anyhow::bail!("cancelled because uncommitted changes are present");
+    }
+
+    Ok(())
+}
+
+fn warn_about_unpushed_commits(
+    path: &std::path::Path,
+    action: &str,
+    require_confirmation: bool,
+) -> Result<()> {
+    let Some(commits) = unpushed_commits(path)? else {
+        return Ok(());
+    };
+
+    println!(
+        "Warning: {} has unpushed commits:",
+        commits.root.display()
+    );
+    for entry in commits.entries.iter().take(10) {
+        println!("  {entry}");
+    }
+    if commits.entries.len() > 10 {
+        println!("  ... and {} more", commits.entries.len() - 10);
+    }
+
+    if require_confirmation && !confirm(&format!("Continue to {action}? [y/N] "))? {
+        anyhow::bail!("cancelled because unpushed commits are present");
     }
 
     Ok(())
