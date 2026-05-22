@@ -12,6 +12,16 @@ subshell, records access history, and helps clean stale build caches such as
 - `ghq`
 - `fzf` optional; `dm` falls back to numbered prompts when it is unavailable
 
+## Shell Integration (Recommended)
+
+Add to your `.zshrc` (or `.bashrc`):
+
+```sh
+eval "$(dm completion zsh)"
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
+
 ## Usage
 
 ### Dashboard
@@ -86,7 +96,6 @@ dm config --edit
 
 # Shell completion
 eval "$(dm completion bash)"
-dm completion zsh > /usr/local/share/zsh/site-functions/_dm
 ```
 
 ### What happens when you open a project
