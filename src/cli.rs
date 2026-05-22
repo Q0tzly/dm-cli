@@ -58,4 +58,21 @@ pub enum Command {
     /// Pull latest changes in activated repositories.
     #[command(alias = "sy")]
     Sync,
+    /// Show or edit configuration.
+    #[command(alias = "cfg")]
+    Config {
+        /// Open the config file in $EDITOR.
+        #[arg(long)]
+        edit: bool,
+    },
+    /// Remove projects whose directories no longer exist.
+    #[command(alias = "p")]
+    Prune {
+        /// Skip confirmation prompts.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show project access history.
+    #[command(alias = "h")]
+    Log,
 }

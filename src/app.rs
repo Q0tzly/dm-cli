@@ -2,7 +2,7 @@ use crate::cache::{
     clean_project, format_bytes, progress_bar, progress_spinner, scan_project_cache_size,
 };
 use crate::cli::{Cli, Command};
-use crate::config::Config;
+use crate::config::{config_path, Config};
 use crate::duration::{human_days_since, parse_age};
 use crate::git::{pull_ff_only, uncommitted_changes, unpulled_commits, unpushed_commits};
 use crate::github::{
@@ -18,6 +18,7 @@ use chrono::Utc;
 use clap::Parser;
 use std::env;
 use std::io::{self, Write};
+use std::process::Command as ShellCommand;
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -33,6 +34,9 @@ pub fn run() -> Result<()> {
         Some(Command::Clean { all, yes }) => clean_projects(&store, &config, all, yes),
         Some(Command::Status) => status_projects(&store, &config),
         Some(Command::Sync) => sync_projects(&store),
+        Some(Command::Config { edit }) => show_config(&paths, edit),
+        Some(Command::Prune { yes }) => prune_projects(&store, yes),
+        Some(Command::Log) => log_projects(&store),
         None => dashboard_projects(&store, &config),
     }
 }
@@ -43,7 +47,29 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
         "open another project",
         true,
     )?;
-    let selection = resolve_project(project)?;
+
+    let selection = if let Some(p) = project {
+        resolve_project(Some(p))?
+    } else {
+        let projects = store.load()?;
+        if projects.is_empty() {
+            resolve_project(None)?
+        } else {
+            let choices: Vec<String> = projects
+                .iter()
+                .map(|p| format!("{}  {}", p.owner_repo(), p.path.display()))
+                .collect();
+            let selected = choose_one("Managed projects", &choices)?;
+            match selected {
+                Some(line) => {
+                    let name = line.split_whitespace().next().unwrap().to_string();
+                    resolve_project(Some(name))?
+                }
+                None => resolve_project(None)?,
+            }
+        }
+    };
+
     let path = ensure_local_repo(&selection)?;
     store.upsert_access(&selection.id, &path)?;
     println!("Opening {} at {}", selection.id, path.display());
@@ -96,8 +122,8 @@ fn print_dashboard_rows(rows: &[DashboardRow]) {
     }
 
     println!(
-        "{:<36} {:<10} {:>8} {:>12} Path",
-        "Project", "Status", "Age", "Cache"
+        "{:<36} {:<10} {:>8} {:>6} {:>5} {:>5} {:>10} Path",
+        "Project", "Status", "Age", "Dirty", "Ahead", "Behind", "Cache"
     );
     for row in rows {
         println!("{}", row.render());
@@ -303,6 +329,100 @@ fn sync_projects(store: &ProjectStore) -> Result<()> {
     Ok(())
 }
 
+fn show_config(paths: &XdgPathProvider, edit: bool) -> Result<()> {
+    let path = config_path(paths)?;
+    if edit {
+        let editor = std::env::var("EDITOR")
+            .or_else(|_| std::env::var("VISUAL"))
+            .unwrap_or_else(|_| "vim".to_string());
+        let status = ShellCommand::new(&editor)
+            .arg(&path)
+            .status()
+            .with_context(|| format!("failed to launch {editor}"))?;
+        if !status.success() {
+            anyhow::bail!("{editor} exited with status {status}");
+        }
+        return Ok(());
+    }
+
+    println!("Config: {}", path.display());
+    if path.exists() {
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        print!("{raw}");
+    } else {
+        println!("(default configuration)");
+        println!(
+            "cache_targets = {:?}",
+            crate::config::default_cache_targets()
+        );
+        println!("older_than = \"14d\"");
+    }
+    Ok(())
+}
+
+fn prune_projects(store: &ProjectStore, yes: bool) -> Result<()> {
+    let mut projects = store.load()?;
+    let stale: Vec<_> = projects
+        .iter()
+        .filter(|p| !p.path.exists())
+        .cloned()
+        .collect();
+
+    if stale.is_empty() {
+        println!("No stale projects to prune.");
+        return Ok(());
+    }
+
+    println!("Stale projects (directory no longer exists):");
+    for p in &stale {
+        println!("  {}  {}", p.owner_repo(), p.path.display());
+    }
+
+    if !yes && !confirm("Remove them from the project list? [y/N] ")? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let stale_ids: std::collections::HashSet<_> =
+        stale.iter().map(|p| p.id.clone()).collect();
+    projects.retain(|p| !stale_ids.contains(&p.id));
+    store.save(&projects)?;
+
+    println!("Pruned {} project(s).", stale.len());
+    Ok(())
+}
+
+fn log_projects(store: &ProjectStore) -> Result<()> {
+    let mut projects = store.load()?;
+    if projects.is_empty() {
+        println!("No project history.");
+        return Ok(());
+    }
+
+    projects.sort_by_key(|b| std::cmp::Reverse(b.last_accessed_at));
+
+    println!(
+        "{:<36} {:<10} {:>12} Path",
+        "Project", "Status", "Last Accessed"
+    );
+    for p in &projects {
+        let age = human_days_since(p.last_accessed_at);
+        let status = match p.status {
+            ProjectStatus::Activated => "Activated",
+            ProjectStatus::Local => "Local",
+        };
+        println!(
+            "{:<36} {:<10} {:>12} {}",
+            p.owner_repo(),
+            status,
+            format!("{age}d ago"),
+            p.path.display()
+        );
+    }
+    Ok(())
+}
+
 fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> {
     let bar = progress_bar("Scanning local cache", projects.len() as u64);
     for project in projects {
@@ -331,37 +451,7 @@ fn status_projects(store: &ProjectStore, config: &Config) -> Result<()> {
     store.save(&projects)?;
 
     let bar = progress_bar("Checking git status", projects.len() as u64);
-
-    struct GitCounts {
-        uncommitted: usize,
-        ahead: usize,
-        behind: usize,
-    }
-
-    let counts: Vec<GitCounts> = std::thread::scope(|s| {
-        let mut handles = Vec::new();
-        for project in &projects {
-            let path = project.path.clone();
-            handles.push(s.spawn(move || GitCounts {
-                uncommitted: uncommitted_changes(&path)
-                    .ok()
-                    .flatten()
-                    .map(|c| c.entries.len())
-                    .unwrap_or(0),
-                ahead: unpushed_commits(&path)
-                    .ok()
-                    .flatten()
-                    .map(|c| c.entries.len())
-                    .unwrap_or(0),
-                behind: unpulled_commits(&path)
-                    .ok()
-                    .flatten()
-                    .map(|c| c.entries.len())
-                    .unwrap_or(0),
-            }));
-        }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
-    });
+    let counts = compute_git_counts(&projects);
 
     let mut rows: Vec<StatusRow> = Vec::new();
     for (project, c) in projects.iter().zip(counts.iter()) {
@@ -418,6 +508,39 @@ impl StatusRow {
     }
 }
 
+struct GitCounts {
+    uncommitted: usize,
+    ahead: usize,
+    behind: usize,
+}
+
+fn compute_git_counts(projects: &[Project]) -> Vec<GitCounts> {
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for project in projects {
+            let path = project.path.clone();
+            handles.push(s.spawn(move || GitCounts {
+                uncommitted: uncommitted_changes(&path)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.entries.len())
+                    .unwrap_or(0),
+                ahead: unpushed_commits(&path)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.entries.len())
+                    .unwrap_or(0),
+                behind: unpulled_commits(&path)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.entries.len())
+                    .unwrap_or(0),
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    })
+}
+
 fn sort_projects_for_dashboard(projects: &mut [Project]) {
     projects.sort_by(|left, right| {
         let left_rank = status_rank(left.status);
@@ -442,6 +565,9 @@ struct DashboardRow {
     project: String,
     status: String,
     age: String,
+    dirty: String,
+    ahead: String,
+    behind: String,
     cache: String,
     path: String,
 }
@@ -449,16 +575,22 @@ struct DashboardRow {
 impl DashboardRow {
     fn render(&self) -> String {
         format!(
-            "{:<36} {:<10} {:>8} {:>12} {}",
-            self.project, self.status, self.age, self.cache, self.path
+            "{:<36} {:<10} {:>8} {:>6} {:>5} {:>5} {:>10} {}",
+            self.project, self.status, self.age, self.dirty, self.ahead, self.behind, self.cache, self.path
         )
     }
 }
 
 fn dashboard_rows(projects: &[Project], include_remote: bool) -> Result<Vec<DashboardRow>> {
-    let mut rows = Vec::new();
-    for project in projects {
+    let counts = compute_git_counts(projects);
+    let mut rows: Vec<DashboardRow> = Vec::new();
+    for (project, c) in projects.iter().zip(counts.iter()) {
         let age = human_days_since(project.last_accessed_at);
+        let dirty = if c.uncommitted > 0 {
+            c.uncommitted.to_string()
+        } else {
+            "clean".to_string()
+        };
         rows.push(DashboardRow {
             project: project.owner_repo().to_string(),
             status: match project.status {
@@ -467,6 +599,9 @@ fn dashboard_rows(projects: &[Project], include_remote: bool) -> Result<Vec<Dash
             }
             .to_string(),
             age: format!("{age}d"),
+            dirty,
+            ahead: c.ahead.to_string(),
+            behind: c.behind.to_string(),
             cache: format_bytes(project.cache_size_bytes.unwrap_or(0)),
             path: project.path.display().to_string(),
         });
@@ -482,6 +617,9 @@ fn dashboard_rows(projects: &[Project], include_remote: bool) -> Result<Vec<Dash
             project: repo.owner_repo,
             status: "Local".to_string(),
             age: "-".to_string(),
+            dirty: "-".to_string(),
+            ahead: "-".to_string(),
+            behind: "-".to_string(),
             cache: "-".to_string(),
             path: repo.path.display().to_string(),
         });
@@ -501,6 +639,9 @@ fn dashboard_rows(projects: &[Project], include_remote: bool) -> Result<Vec<Dash
                 project: repo,
                 status: "Remote".to_string(),
                 age: "-".to_string(),
+                dirty: "-".to_string(),
+                ahead: "-".to_string(),
+                behind: "-".to_string(),
                 cache: "-".to_string(),
                 path: "-".to_string(),
             });
