@@ -94,12 +94,12 @@ fn dashboard_projects(store: &ProjectStore, _config: &Config) -> Result<()> {
     let activated = projects.iter().filter(|p| p.status == ProjectStatus::Activated).count();
 
     println!();
-    println!("           ██╗  ██╗███████╗██╗     ██████╗ ");
-    println!("           ██║ ██╔╝██╔════╝██║     ██╔══██╗");
-    println!("           █████╔╝ █████╗  ██║     ██████╔╝");
-    println!("           ██╔═██╗ ██╔══╝  ██║     ██╔═══╝ ");
-    println!("           ██║  ██╗███████╗███████╗██║     ");
-    println!("           ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ");
+    println!("          ██████╗ ███████╗███╗   ███╗");
+    println!("          ██╔══██╗██╔════╝████╗ ████║");
+    println!("          ██████╔╝█████╗  ██╔████╔██║");
+    println!("          ██╔══██╗██╔══╝  ██║╚██╔╝██║");
+    println!("          ██║  ██║███████╗██║ ╚═╝ ██║");
+    println!("          ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝");
     println!();
 
     if total == 0 {
