@@ -15,7 +15,7 @@ use crate::shell::open_subshell;
 use crate::store::ProjectStore;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::env;
 use std::io::{self, Write};
 use std::process::Command as ShellCommand;
@@ -37,6 +37,12 @@ pub fn run() -> Result<()> {
         Some(Command::Config { edit }) => show_config(&paths, edit),
         Some(Command::Prune { yes }) => prune_projects(&store, yes),
         Some(Command::Log) => log_projects(&store),
+        Some(Command::Completion { shell }) => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+            Ok(())
+        }
         None => dashboard_projects(&store, &config),
     }
 }

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -75,4 +76,9 @@ pub enum Command {
     /// Show project access history.
     #[command(alias = "h")]
     Log,
+    /// Generate shell completion script.
+    Completion {
+        /// Shell to generate completions for.
+        shell: Shell,
+    },
 }
