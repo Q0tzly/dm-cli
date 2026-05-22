@@ -14,18 +14,6 @@ pub fn choose_one(prompt: &str, choices: &[String]) -> Result<Option<String>> {
     choose_one_numbered(prompt, choices)
 }
 
-pub fn choose_many(prompt: &str, choices: &[String]) -> Result<Vec<String>> {
-    if choices.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if command_exists("fzf") {
-        return choose_with_fzf(prompt, choices, true);
-    }
-
-    choose_many_numbered(prompt, choices)
-}
-
 pub fn command_exists(name: &str) -> bool {
     Command::new(name)
         .arg("--version")
@@ -85,28 +73,6 @@ fn choose_one_numbered(prompt: &str, choices: &[String]) -> Result<Option<String
 
     let index = parse_number(trimmed, choices.len())?;
     Ok(Some(choices[index].clone()))
-}
-
-fn choose_many_numbered(prompt: &str, choices: &[String]) -> Result<Vec<String>> {
-    print_numbered(prompt, choices)?;
-    print!("Select numbers separated by commas, or press enter to cancel: ");
-    io::stdout().flush().context("failed to flush stdout")?;
-
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .context("failed to read selections")?;
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    trimmed
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(|item| parse_number(item, choices.len()).map(|index| choices[index].clone()))
-        .collect()
 }
 
 fn print_numbered(prompt: &str, choices: &[String]) -> Result<()> {

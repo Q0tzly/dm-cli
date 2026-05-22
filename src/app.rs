@@ -10,7 +10,7 @@ use crate::github::{
 };
 use crate::paths::XdgPathProvider;
 use crate::project::{Project, ProjectStatus};
-use crate::select::{choose_many, choose_one};
+use crate::select::choose_one;
 use crate::shell::open_subshell;
 use crate::store::ProjectStore;
 use anyhow::{Context, Result};
@@ -30,9 +30,7 @@ pub fn run() -> Result<()> {
         Some(Command::Cd { project }) => open_project(project, &store),
         Some(Command::List { all }) => list_projects(&store, &config, all),
         Some(Command::Close { project, yes }) => close_project(&store, &config, &project, yes),
-        Some(Command::Clean { older_than, yes }) => {
-            clean_projects(&store, &config, older_than, yes)
-        }
+        Some(Command::Clean { all, yes }) => clean_projects(&store, &config, all, yes),
         None => dashboard_projects(&store, &config),
     }
 }
@@ -167,7 +165,7 @@ fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool
 fn clean_projects(
     store: &ProjectStore,
     config: &Config,
-    older_than: Option<String>,
+    all: bool,
     yes: bool,
 ) -> Result<()> {
     let mut projects = store.load()?;
@@ -177,36 +175,17 @@ fn clean_projects(
     }
 
     refresh_cache_sizes(&mut projects, config)?;
-    let selected = if let Some(age) = older_than {
-        let age = parse_age(&age)?;
+
+    let selected: Vec<Project> = if all {
+        projects.clone()
+    } else {
+        let age = parse_age(&config.older_than)?;
         let cutoff = Utc::now() - age;
         projects
             .iter()
             .filter(|project| project.last_accessed_at < cutoff)
             .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        let choices: Vec<_> = projects
-            .iter()
-            .map(|project| {
-                format!(
-                    "{}\t{}\t{}",
-                    project.owner_repo(),
-                    format_bytes(project.cache_size_bytes.unwrap_or(0)),
-                    project.path.display()
-                )
-            })
-            .collect();
-        let selected_lines = choose_many("Clean projects", &choices)?;
-        projects
-            .iter()
-            .filter(|project| {
-                selected_lines
-                    .iter()
-                    .any(|line| line.starts_with(project.owner_repo()))
-            })
-            .cloned()
-            .collect::<Vec<_>>()
+            .collect()
     };
 
     if selected.is_empty() {

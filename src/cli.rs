@@ -44,9 +44,9 @@ pub enum Command {
     },
     /// Remove cache directories from managed repositories.
     Clean {
-        /// Clean projects not accessed within this age, for example 14d or 2w.
+        /// Clean all managed repositories regardless of age.
         #[arg(long)]
-        older_than: Option<String>,
+        all: bool,
 
         /// Skip confirmation prompts.
         #[arg(long)]
