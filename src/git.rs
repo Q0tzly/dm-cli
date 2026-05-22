@@ -118,6 +118,9 @@ pub fn unpulled_commits(path: &Path) -> Result<Option<UnpulledCommits>> {
 }
 
 pub fn pull_ff_only(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        bail!("path does not exist: {}", path.display());
+    }
     let root = repo_root(path)?.context("not a git repository")?;
 
     let output = Command::new("git")

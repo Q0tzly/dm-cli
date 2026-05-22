@@ -116,8 +116,16 @@ fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool
     };
     let project = projects[project_index].clone();
 
-    let size = scan_project_cache_size(&project.path, &config.cache_targets)
-        .with_context(|| format!("failed to scan {}", project.path.display()))?;
+    let size = if project.path.exists() {
+        scan_project_cache_size(&project.path, &config.cache_targets)
+            .with_context(|| format!("failed to scan {}", project.path.display()))?
+    } else {
+        println!(
+            "Warning: project directory does not exist: {}",
+            project.path.display()
+        );
+        0
+    };
     println!(
         "Will close {} and remove {} of cache.",
         project.owner_repo(),
@@ -151,8 +159,12 @@ fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool
         anyhow::bail!("push commits before closing");
     }
 
-    let removed = clean_project(&project.path, &config.cache_targets)
-        .with_context(|| format!("failed to clean {}", project.id))?;
+    let removed = if project.path.exists() {
+        clean_project(&project.path, &config.cache_targets)
+            .with_context(|| format!("failed to clean {}", project.id))?
+    } else {
+        0
+    };
     projects[project_index].status = ProjectStatus::Local;
     projects[project_index].cache_size_bytes = Some(0);
     store.save(&projects)?;
@@ -219,8 +231,10 @@ fn clean_projects(
     let bar = progress_bar("Cleaning", selected.len() as u64);
     let mut removed_total = 0;
     for project in &selected {
-        removed_total += clean_project(&project.path, &config.cache_targets)
-            .with_context(|| format!("failed to clean {}", project.id))?;
+        if project.path.exists() {
+            removed_total += clean_project(&project.path, &config.cache_targets)
+                .with_context(|| format!("failed to clean {}", project.id))?;
+        }
         bar.inc(1);
     }
     bar.finish_and_clear();
@@ -247,18 +261,19 @@ fn sync_projects(store: &ProjectStore) -> Result<()> {
     let mut ok = 0u32;
     let mut fail = 0u32;
     for project in &activated {
-        let result = pull_ff_only(&project.path);
-        match &result {
-            Ok(true) => ok += 1,
-            Ok(false) => {}
-            Err(_) => fail += 1,
+        match pull_ff_only(&project.path) {
+            Ok(true) => {
+                ok += 1;
+                println!("  ↑ {}", project.owner_repo());
+            }
+            Ok(false) => {
+                println!("  · {}", project.owner_repo());
+            }
+            Err(e) => {
+                fail += 1;
+                println!("  ✗ {}: {e}", project.owner_repo());
+            }
         }
-        let symbol = match &result {
-            Ok(true) => "↑",
-            Ok(false) => "·",
-            Err(_) => "✗",
-        };
-        println!("  {symbol} {}", project.owner_repo());
         bar.inc(1);
     }
     bar.finish_and_clear();
@@ -302,6 +317,7 @@ fn status_projects(store: &ProjectStore, config: &Config) -> Result<()> {
     }
 
     refresh_cache_sizes(&mut projects, config)?;
+    store.save(&projects)?;
 
     let bar = progress_bar("Checking git status", projects.len() as u64);
     let mut rows: Vec<StatusRow> = Vec::new();
