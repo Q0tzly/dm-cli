@@ -88,9 +88,39 @@ fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) ->
     Ok(())
 }
 
-fn dashboard_projects(store: &ProjectStore, config: &Config) -> Result<()> {
-    let rows = load_dashboard_rows(store, config, false)?;
-    print_dashboard_rows(&rows);
+fn dashboard_projects(store: &ProjectStore, _config: &Config) -> Result<()> {
+    let projects = store.load()?;
+    let total = projects.len();
+    let activated = projects.iter().filter(|p| p.status == ProjectStatus::Activated).count();
+
+    println!();
+    println!("           ██╗  ██╗███████╗██╗     ██████╗ ");
+    println!("           ██║ ██╔╝██╔════╝██║     ██╔══██╗");
+    println!("           █████╔╝ █████╗  ██║     ██████╔╝");
+    println!("           ██╔═██╗ ██╔══╝  ██║     ██╔═══╝ ");
+    println!("           ██║  ██╗███████╗███████╗██║     ");
+    println!("           ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ");
+    println!();
+
+    if total == 0 {
+        println!("No projects yet.");
+        println!();
+        println!("Usage:");
+        println!("  rem open <owner/repo>  Open a project");
+        println!("  rem o <owner/repo>     Short alias for open");
+        println!("  rem list                List all projects");
+        println!("  rem help                Show all commands");
+    } else {
+        println!("Projects: {} total, {} activated", total, activated);
+        println!();
+        println!("Usage:");
+        println!("  rem open                Select and open a project");
+        println!("  rem list                Show detailed project list");
+        println!("  rem status              Show git status of all projects");
+        println!("  rem help                Show all commands");
+    }
+
+    println!();
     Ok(())
 }
 
