@@ -90,19 +90,43 @@ fn search_and_select_project(
 ) -> Result<RepoSelection> {
     let query_lower = query.to_lowercase();
 
-    let local_projects = store.load()?;
-    let mut matches: Vec<SearchCandidate> = local_projects
-        .iter()
-        .filter(|p| {
-            p.id.to_lowercase().contains(&query_lower)
-                || p.owner_repo().to_lowercase().contains(&query_lower)
-        })
-        .map(|p| SearchCandidate {
+    let managed_projects = store.load()?;
+    let local_repos = list_local_repositories()?;
+
+    let managed_ids: std::collections::HashSet<_> =
+        managed_projects.iter().map(|p| p.id.as_str()).collect();
+
+    let mut all_local: Vec<SearchCandidate> = Vec::new();
+
+    for p in &managed_projects {
+        all_local.push(SearchCandidate {
             id: p.id.clone(),
             owner_repo: p.owner_repo().to_string(),
             path: Some(p.path.display().to_string()),
-            is_local: true,
+            is_managed: true,
+            is_remote: false,
+        });
+    }
+
+    for repo in &local_repos {
+        if !managed_ids.contains(repo.id.as_str()) {
+            all_local.push(SearchCandidate {
+                id: repo.id.clone(),
+                owner_repo: repo.owner_repo.clone(),
+                path: Some(repo.path.display().to_string()),
+                is_managed: false,
+                is_remote: false,
+            });
+        }
+    }
+
+    let mut matches: Vec<SearchCandidate> = all_local
+        .iter()
+        .filter(|c| {
+            c.id.to_lowercase().contains(&query_lower)
+                || c.owner_repo.to_lowercase().contains(&query_lower)
         })
+        .cloned()
         .collect();
 
     if include_remote {
@@ -111,7 +135,7 @@ fn search_and_select_project(
         spinner.finish_and_clear();
 
         let local_ids: std::collections::HashSet<_> =
-            local_projects.iter().map(|p| p.id.as_str()).collect();
+            all_local.iter().map(|c| c.owner_repo.as_str()).collect();
 
         for repo in remote_repos {
             if repo.to_lowercase().contains(&query_lower)
@@ -121,7 +145,8 @@ fn search_and_select_project(
                     id: format!("github.com/{}", repo),
                     owner_repo: repo,
                     path: None,
-                    is_local: false,
+                    is_managed: false,
+                    is_remote: true,
                 });
             }
         }
@@ -172,7 +197,8 @@ struct SearchCandidate {
     id: String,
     owner_repo: String,
     path: Option<String>,
-    is_local: bool,
+    is_managed: bool,
+    is_remote: bool,
 }
 
 fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) -> Result<()> {
