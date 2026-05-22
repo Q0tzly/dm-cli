@@ -3,7 +3,12 @@ name = "repom"
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
-author = "Q0tzly"
+authors = ["Q0tzly <contact@q0tzly.dev>"]
+description = "Context-aware repository manager for GitHub projects"
+readme = "README.md"
+repository = "https://github.com/Q0tzly/repom"
+keywords = ["github", "cli", "repository", "manager", "ghq"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "rem"
