@@ -129,8 +129,28 @@ fn close_project(store: &ProjectStore, config: &Config, project: &str, yes: bool
         return Ok(());
     }
 
-    warn_about_uncommitted_changes(&project.path, "close this project", !yes)?;
-    warn_about_unpushed_commits(&project.path, "close this project", !yes)?;
+    if let Some(changes) = uncommitted_changes(&project.path)? {
+        println!("Uncommitted changes in {}:", changes.root.display());
+        for entry in changes.entries.iter().take(10) {
+            println!("  {entry}");
+        }
+        if changes.entries.len() > 10 {
+            println!("  ... and {} more", changes.entries.len() - 10);
+        }
+        anyhow::bail!("commit or stash changes before closing");
+    }
+
+    if let Some(commits) = unpushed_commits(&project.path)? {
+        println!("Unpushed commits in {}:", commits.root.display());
+        for entry in commits.entries.iter().take(10) {
+            println!("  {entry}");
+        }
+        if commits.entries.len() > 10 {
+            println!("  ... and {} more", commits.entries.len() - 10);
+        }
+        anyhow::bail!("push commits before closing");
+    }
+
     let removed = clean_project(&project.path, &config.cache_targets)
         .with_context(|| format!("failed to clean {}", project.id))?;
     projects[project_index].status = ProjectStatus::Local;
@@ -376,29 +396,4 @@ fn warn_about_uncommitted_changes(
     Ok(())
 }
 
-fn warn_about_unpushed_commits(
-    path: &std::path::Path,
-    action: &str,
-    require_confirmation: bool,
-) -> Result<()> {
-    let Some(commits) = unpushed_commits(path)? else {
-        return Ok(());
-    };
 
-    println!(
-        "Warning: {} has unpushed commits:",
-        commits.root.display()
-    );
-    for entry in commits.entries.iter().take(10) {
-        println!("  {entry}");
-    }
-    if commits.entries.len() > 10 {
-        println!("  ... and {} more", commits.entries.len() - 10);
-    }
-
-    if require_confirmation && !confirm(&format!("Continue to {action}? [y/N] "))? {
-        anyhow::bail!("cancelled because unpushed commits are present");
-    }
-
-    Ok(())
-}
