@@ -366,12 +366,11 @@ fn close_all_activated(store: &ProjectStore, config: &Config, yes: bool) -> Resu
     let total_cache: u64 = activated
         .iter()
         .map(|p| {
-            p.path
-                .exists()
-                .then(|| {
-                    scan_project_cache_size(&p.path, &config.cache_targets).unwrap_or(0)
-                })
-                .unwrap_or(0)
+            if p.path.exists() {
+                scan_project_cache_size(&p.path, &config.cache_targets).unwrap_or(0)
+            } else {
+                0
+            }
         })
         .sum();
 
@@ -449,7 +448,7 @@ fn close_select_by_query<'a>(
     }
 }
 
-fn close_select_interactive<'a>(projects: &'a [Project]) -> Result<Option<&'a Project>> {
+fn close_select_interactive(projects: &[Project]) -> Result<Option<&Project>> {
     let activated: Vec<&Project> = projects
         .iter()
         .filter(|p| p.status == ProjectStatus::Activated)
@@ -571,7 +570,7 @@ fn get_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     let path = ensure_local_repo(&selection)?;
     let project = store.upsert_access(&selection.id, &path)?;
     println!("Opened {} at {}", selection.id, path.display());
-    open_subshell(&project.owner_repo(), &path)
+    open_subshell(project.owner_repo(), &path)
 }
 
 fn clean_projects(
