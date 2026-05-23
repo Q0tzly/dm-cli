@@ -62,16 +62,19 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     let selection = if let Some(p) = project {
         search_and_select_project(&p, store)?
     } else {
-        let projects = store.load()?;
-        if projects.is_empty() {
-            println!("No managed projects. Use `rem get` to clone a remote repository.");
+        let managed_projects = store.load()?;
+        let local_entries = merge_local_entries(&managed_projects)?;
+
+        if local_entries.is_empty() {
+            println!("No local repositories found. Use `rem get` to clone a remote repository.");
             return Ok(());
         }
-        let choices: Vec<String> = projects
+
+        let choices: Vec<String> = local_entries
             .iter()
-            .map(|p| format!("{}  {}", p.owner_repo(), p.path.display()))
+            .map(|e| format!("{}  {}", e.label, e.path.display()))
             .collect();
-        let selected = choose_one("Managed projects", &choices)?;
+        let selected = choose_one("Local repositories", &choices)?;
         match selected {
             Some(line) => {
                 let name = parse_choice_name(&line)?;
@@ -88,6 +91,35 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     store.upsert_access(&selection.id, &path)?;
     println!("Opening {} at {}", selection.id, path.display());
     open_subshell(&selection.owner_repo, &path)
+}
+
+struct LocalEntry {
+    label: String,
+    path: PathBuf,
+}
+
+fn merge_local_entries(managed: &[Project]) -> Result<Vec<LocalEntry>> {
+    let mut entries: Vec<LocalEntry> = managed
+        .iter()
+        .map(|p| LocalEntry {
+            label: p.owner_repo().to_string(),
+            path: p.path.clone(),
+        })
+        .collect();
+
+    let managed_ids: std::collections::HashSet<_> =
+        managed.iter().map(|p| p.id.as_str()).collect();
+
+    for repo in list_local_repositories()? {
+        if !managed_ids.contains(repo.id.as_str()) {
+            entries.push(LocalEntry {
+                label: repo.owner_repo,
+                path: repo.path,
+            });
+        }
+    }
+
+    Ok(entries)
 }
 
 fn open_local_repo(selection: &RepoSelection) -> Result<PathBuf> {
