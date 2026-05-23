@@ -1,4 +1,5 @@
 mod app;
+mod commands;
 mod cache;
 mod cli;
 mod config;
