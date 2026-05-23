@@ -5,7 +5,7 @@ use clap_complete::Shell;
 #[command(
     name = "rem",
     version,
-    about = "Open the interactive repository dashboard, or run a repository command"
+    about = "Context-aware repository manager for GitHub projects"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -19,10 +19,6 @@ pub enum Command {
     Open {
         /// Repository id (supports partial match) such as owner/repo or github.com/owner/repo.
         project: Option<String>,
-
-        /// Include remote repositories from GitHub.
-        #[arg(short, long)]
-        all: bool,
     },
     /// Open a repository in a subshell.
     #[command(hide = true)]
@@ -33,15 +29,27 @@ pub enum Command {
     /// Print repositories to standard output.
     #[command(alias = "l")]
     List {
-        /// Include remote repositories that have not been opened locally.
+        /// Include remote repositories from GitHub.
+        #[arg(short = 'r', long)]
+        remote: bool,
+
+        /// Show cache size and last access age.
         #[arg(short, long)]
-        all: bool,
+        size: bool,
+
+        /// Sort by last access time (most recent first).
+        #[arg(short = 'L', long)]
+        log: bool,
     },
     /// Mark a repository closed and remove its cache directories.
     #[command(alias = "c")]
     Close {
-        /// Repository id such as owner/repo or github.com/owner/repo.
-        project: String,
+        /// Repository id (supports partial match) such as owner/repo or github.com/owner/repo.
+        project: Option<String>,
+
+        /// Close all activated repositories.
+        #[arg(long)]
+        all: bool,
 
         /// Skip confirmation prompts.
         #[arg(long)]
@@ -59,7 +67,17 @@ pub enum Command {
     },
     /// Show git status of managed repositories.
     #[command(alias = "s")]
-    Status,
+    Status {
+        /// Include local (non-activated) repositories.
+        #[arg(short, long)]
+        all: bool,
+    },
+    /// Clone and activate a remote repository.
+    #[command(alias = "g")]
+    Get {
+        /// Repository id such as owner/repo or github.com/owner/repo.
+        project: Option<String>,
+    },
     /// Pull latest changes in activated repositories.
     #[command(alias = "sy")]
     Sync,
@@ -78,7 +96,7 @@ pub enum Command {
         yes: bool,
     },
     /// Show project access history.
-    #[command(alias = "h")]
+    #[command(alias = "h", hide = true)]
     Log,
     /// Generate shell completion script.
     Init {

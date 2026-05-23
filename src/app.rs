@@ -6,8 +6,8 @@ use crate::config::{config_path, Config};
 use crate::duration::{human_days_since, parse_age};
 use crate::git::{pull_ff_only, uncommitted_changes, unpulled_commits, unpushed_commits};
 use crate::github::{
-    ensure_local_repo, list_local_repositories, list_remote_repositories, resolve_project,
-    RepoSelection,
+    ensure_local_repo, list_local_repositories, list_remote_repositories, normalize_project_id,
+    resolve_project, RepoSelection,
 };
 use crate::paths::XdgPathProvider;
 use crate::project::{Project, ProjectStatus};
@@ -28,16 +28,21 @@ pub fn run() -> Result<()> {
     let store = ProjectStore::new(&paths)?;
 
     match cli.command {
-        Some(Command::Open { project, all }) => open_project(project, all, &store),
-        Some(Command::Cd { project }) => open_project(project, false, &store),
-        Some(Command::List { all }) => list_projects(&store, &config, all),
-        Some(Command::Close { project, yes }) => close_project(&store, &config, &project, yes),
+        Some(Command::Open { project }) => open_project(project, &store),
+        Some(Command::Cd { project }) => open_project(project, &store),
+        Some(Command::List { remote, size, log }) => {
+            list_projects(&store, &config, remote, size, log)
+        }
+        Some(Command::Close { project, all, yes }) => {
+            close_project(&store, &config, project, all, yes)
+        }
         Some(Command::Clean { all, yes }) => clean_projects(&store, &config, all, yes),
-        Some(Command::Status) => status_projects(&store, &config),
+        Some(Command::Status { all }) => status_projects(&store, &config, all),
+        Some(Command::Get { project }) => get_project(project, &store),
         Some(Command::Sync) => sync_projects(&store),
         Some(Command::Config { edit }) => show_config(&paths, edit),
         Some(Command::Prune { yes }) => prune_projects(&store, yes),
-        Some(Command::Log) => log_projects(&store),
+        Some(Command::Log) => log_projects(&store, &config),
         Some(Command::Init { shell }) => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
@@ -48,7 +53,7 @@ pub fn run() -> Result<()> {
     }
 }
 
-fn open_project(project: Option<String>, include_remote: bool, store: &ProjectStore) -> Result<()> {
+fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     warn_about_uncommitted_changes(
         &env::current_dir().context("failed to determine current directory")?,
         "open another project",
@@ -56,7 +61,7 @@ fn open_project(project: Option<String>, include_remote: bool, store: &ProjectSt
     )?;
 
     let selection = if let Some(p) = project {
-        search_and_select_project(&p, include_remote, store)?
+        search_and_select_project(&p, store)?
     } else {
         let projects = store.load()?;
         if projects.is_empty() {
@@ -85,7 +90,6 @@ fn open_project(project: Option<String>, include_remote: bool, store: &ProjectSt
 
 fn search_and_select_project(
     query: &str,
-    include_remote: bool,
     store: &ProjectStore,
 ) -> Result<RepoSelection> {
     let query_lower = query.to_lowercase();
@@ -103,8 +107,6 @@ fn search_and_select_project(
             id: p.id.clone(),
             owner_repo: p.owner_repo().to_string(),
             path: Some(p.path.display().to_string()),
-            is_managed: true,
-            is_remote: false,
         });
     }
 
@@ -114,13 +116,11 @@ fn search_and_select_project(
                 id: repo.id.clone(),
                 owner_repo: repo.owner_repo.clone(),
                 path: Some(repo.path.display().to_string()),
-                is_managed: false,
-                is_remote: false,
             });
         }
     }
 
-    let mut matches: Vec<SearchCandidate> = all_local
+    let matches: Vec<SearchCandidate> = all_local
         .iter()
         .filter(|c| {
             c.id.to_lowercase().contains(&query_lower)
@@ -129,37 +129,8 @@ fn search_and_select_project(
         .cloned()
         .collect();
 
-    if include_remote {
-        let spinner = progress_spinner("Searching remote repositories");
-        let remote_repos = list_remote_repositories()?;
-        spinner.finish_and_clear();
-
-        let local_ids: std::collections::HashSet<_> =
-            all_local.iter().map(|c| c.owner_repo.as_str()).collect();
-
-        for repo in remote_repos {
-            if repo.to_lowercase().contains(&query_lower)
-                && !local_ids.contains(repo.as_str())
-            {
-                matches.push(SearchCandidate {
-                    id: format!("github.com/{}", repo),
-                    owner_repo: repo,
-                    path: None,
-                    is_managed: false,
-                    is_remote: true,
-                });
-            }
-        }
-    }
-
     match matches.len() {
-        0 => {
-            if include_remote {
-                anyhow::bail!("no projects found matching '{}' (local and remote)", query)
-            } else {
-                anyhow::bail!("no local projects found matching '{}'; use -a to include remote", query)
-            }
-        }
+        0 => anyhow::bail!("no local projects found matching '{}'", query),
         1 => {
             let candidate = &matches[0];
             Ok(RepoSelection {
@@ -170,22 +141,11 @@ fn search_and_select_project(
         _ => {
             let choices: Vec<String> = matches
                 .iter()
-                .map(|c| {
-                    if let Some(path) = &c.path {
-                        format!("{}  {}", c.owner_repo, path)
-                    } else {
-                        format!("{}  (remote)", c.owner_repo)
-                    }
-                })
+                .map(|c| format!("{}  {}", c.owner_repo, c.path.as_deref().unwrap_or("(remote)")))
                 .collect();
 
-            let prompt = if include_remote {
-                "Select project (local + remote)"
-            } else {
-                "Select local project"
-            };
-
-            let selected = choose_one(prompt, &choices)?.context("no project selected")?;
+            let selected = choose_one("Select local project", &choices)?
+                .context("no project selected")?;
             let name = selected.split_whitespace().next().unwrap().to_string();
             resolve_project(Some(name))
         }
@@ -197,14 +157,142 @@ struct SearchCandidate {
     id: String,
     owner_repo: String,
     path: Option<String>,
-    is_managed: bool,
-    is_remote: bool,
 }
 
-fn list_projects(store: &ProjectStore, config: &Config, include_remote: bool) -> Result<()> {
-    let rows = load_dashboard_rows(store, config, include_remote)?;
-    print_dashboard_rows(&rows);
+fn list_projects(
+    store: &ProjectStore,
+    config: &Config,
+    remote: bool,
+    size: bool,
+    log: bool,
+) -> Result<()> {
+    let mut projects = store.load()?;
+
+    if log {
+        projects.sort_by_key(|b| std::cmp::Reverse(b.last_accessed_at));
+    }
+
+    if size {
+        refresh_cache_sizes(&mut projects, config)?;
+        store.save(&projects)?;
+    }
+
+    let mut rows = list_dashboard_rows(&projects, remote, size)?;
+
+    if log && !size {
+        rows.sort_by_key(|b| std::cmp::Reverse(b.age_days));
+    }
+
+    list_print(&rows, size);
     Ok(())
+}
+
+fn list_dashboard_rows(
+    projects: &[Project],
+    remote: bool,
+    size: bool,
+) -> Result<Vec<DashboardRow>> {
+    let counts = if size {
+        compute_git_counts(projects)
+    } else {
+        projects.iter().map(|_| GitCounts { uncommitted: 0, ahead: 0, behind: 0 }).collect()
+    };
+
+    let mut rows: Vec<DashboardRow> = Vec::new();
+    for (project, c) in projects.iter().zip(counts.iter()) {
+        let age = if size {
+            human_days_since(project.last_accessed_at)
+        } else {
+            0
+        };
+        rows.push(DashboardRow {
+            project: project.owner_repo().to_string(),
+            status: match project.status {
+                ProjectStatus::Activated => "Activated",
+                ProjectStatus::Local => "Local",
+            }
+            .to_string(),
+            age: if size { format!("{age}d") } else { "-".to_string() },
+            age_days: age,
+            dirty: if size && c.uncommitted > 0 { c.uncommitted.to_string() } else { "-".to_string() },
+            ahead: if size { c.ahead.to_string() } else { "-".to_string() },
+            behind: if size { c.behind.to_string() } else { "-".to_string() },
+            cache: if size {
+                format_bytes(project.cache_size_bytes.unwrap_or(0))
+            } else {
+                "-".to_string()
+            },
+            path: project.path.display().to_string(),
+        });
+    }
+
+    let local_repos = list_local_repositories()?;
+    let managed_ids: std::collections::HashSet<_> =
+        projects.iter().map(|p| p.id.as_str()).collect();
+    for repo in &local_repos {
+        if managed_ids.contains(repo.id.as_str()) {
+            continue;
+        }
+        rows.push(DashboardRow {
+            project: repo.owner_repo.clone(),
+            status: "Local".to_string(),
+            age: "-".to_string(),
+            age_days: 0,
+            dirty: "-".to_string(),
+            ahead: "-".to_string(),
+            behind: "-".to_string(),
+            cache: "-".to_string(),
+            path: repo.path.display().to_string(),
+        });
+    }
+
+    if remote {
+        let local_ids: std::collections::HashSet<_> =
+            rows.iter().map(|r| r.project.clone()).collect();
+        let spinner = progress_spinner("Fetching remote repositories from GitHub");
+        let remote_repos = list_remote_repositories()?;
+        spinner.finish_and_clear();
+        for repo in remote_repos {
+            if local_ids.contains(repo.as_str()) {
+                continue;
+            }
+            rows.push(DashboardRow {
+                project: repo,
+                status: "Remote".to_string(),
+                age: "-".to_string(),
+                age_days: 0,
+                dirty: "-".to_string(),
+                ahead: "-".to_string(),
+                behind: "-".to_string(),
+                cache: "-".to_string(),
+                path: "-".to_string(),
+            });
+        }
+    }
+
+    Ok(rows)
+}
+
+fn list_print(rows: &[DashboardRow], size: bool) {
+    if rows.is_empty() {
+        println!("No projects.");
+        return;
+    }
+
+    if size {
+        println!(
+            "{:<36} {:<10} {:>8} {:>6} {:>5} {:>5} {:>10} Path",
+            "Project", "Status", "Age", "Dirty", "Ahead", "Behind", "Cache"
+        );
+        for row in rows {
+            println!("{}", row.render());
+        }
+    } else {
+        println!("{:<36} {:<10}  Path", "Project", "Status");
+        for row in rows {
+            println!("{:<36} {:<10}  {}", row.project, row.status, row.path);
+        }
+    }
 }
 
 fn dashboard_projects(store: &ProjectStore, _config: &Config) -> Result<()> {
@@ -243,38 +331,105 @@ fn dashboard_projects(store: &ProjectStore, _config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn load_dashboard_rows(
+fn close_project(
     store: &ProjectStore,
     config: &Config,
-    include_remote: bool,
-) -> Result<Vec<DashboardRow>> {
-    let mut projects = store.load()?;
-    refresh_cache_sizes(&mut projects, config)?;
-    sort_projects_for_dashboard(&mut projects);
-    store.save(&projects)?;
+    query: Option<String>,
+    all: bool,
+    yes: bool,
+) -> Result<()> {
+    if all {
+        return close_all_activated(store, config, yes);
+    }
 
-    dashboard_rows(&projects, include_remote)
+    let projects = store.load()?;
+
+    let selected_project = if let Some(q) = query {
+        close_select_by_query(&projects, &q)?
+    } else {
+        close_select_interactive(&projects)?
+    };
+
+    let Some(selected_project) = selected_project else {
+        return Ok(());
+    };
+
+    execute_close(store, config, selected_project, yes)
 }
 
-fn print_dashboard_rows(rows: &[DashboardRow]) {
-    if rows.is_empty() {
-        println!("No managed projects yet. Open one with `dm open owner/repo`.");
-        return;
+fn close_all_activated(store: &ProjectStore, config: &Config, yes: bool) -> Result<()> {
+    let projects = store.load()?;
+    let activated: Vec<_> = projects
+        .iter()
+        .filter(|p| p.status == ProjectStatus::Activated)
+        .cloned()
+        .collect();
+
+    if activated.is_empty() {
+        println!("No activated projects to close.");
+        return Ok(());
     }
+
+    let total_cache: u64 = activated
+        .iter()
+        .map(|p| {
+            p.path
+                .exists()
+                .then(|| {
+                    scan_project_cache_size(&p.path, &config.cache_targets).unwrap_or(0)
+                })
+                .unwrap_or(0)
+        })
+        .sum();
 
     println!(
-        "{:<36} {:<10} {:>8} {:>6} {:>5} {:>5} {:>10} Path",
-        "Project", "Status", "Age", "Dirty", "Ahead", "Behind", "Cache"
+        "Will close {} activated project(s) and remove {} of cache.",
+        activated.len(),
+        format_bytes(total_cache)
     );
-    for row in rows {
-        println!("{}", row.render());
+
+    if !yes && !confirm("Continue? [y/N] ")? {
+        println!("Cancelled.");
+        return Ok(());
     }
+
+    let mut closed = 0u32;
+    let mut errors = 0u32;
+    for project in &activated {
+        match execute_close_inner(store, config, project) {
+            Ok(removed) => {
+                closed += 1;
+                println!("  ✓ {} (removed {})", project.owner_repo(), format_bytes(removed));
+            }
+            Err(e) => {
+                errors += 1;
+                eprintln!("  ✗ {}: {e}", project.owner_repo());
+            }
+        }
+    }
+
+    let parts: Vec<_> = [
+        Some(format!("{closed} closed")).filter(|_| closed > 0),
+        Some(format!("{errors} failed")).filter(|_| errors > 0),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if parts.is_empty() {
+        println!("Nothing done.");
+    } else {
+        println!("{}", parts.join(", "));
+    }
+
+    Ok(())
 }
 
-fn close_project(store: &ProjectStore, config: &Config, query: &str, yes: bool) -> Result<()> {
-    let projects = store.load()?;
+fn close_select_by_query<'a>(
+    projects: &'a [Project],
+    query: &str,
+) -> Result<Option<&'a Project>> {
     let query_lower = query.to_lowercase();
-
     let matches: Vec<&Project> = projects
         .iter()
         .filter(|p| {
@@ -283,11 +438,9 @@ fn close_project(store: &ProjectStore, config: &Config, query: &str, yes: bool) 
         })
         .collect();
 
-    let selected_project = match matches.len() {
-        0 => {
-            anyhow::bail!("no local projects found matching '{}'", query)
-        }
-        1 => matches[0].clone(),
+    match matches.len() {
+        0 => anyhow::bail!("no projects found matching '{}'", query),
+        1 => Ok(Some(matches[0])),
         _ => {
             let choices: Vec<String> = matches
                 .iter()
@@ -297,26 +450,42 @@ fn close_project(store: &ProjectStore, config: &Config, query: &str, yes: bool) 
             let selected = choose_one("Select project to close", &choices)?
                 .context("no project selected")?;
             let name = selected.split_whitespace().next().unwrap().to_string();
-            let selection = resolve_project(Some(name))?;
-
-            projects
-                .iter()
-                .find(|p| p.id == selection.id)
-                .context("selected project not found")?
-                .clone()
+            let sel_id = format!("github.com/{name}");
+            Ok(projects.iter().find(|p| p.id == sel_id || p.owner_repo() == name))
         }
-    };
+    }
+}
 
-    let mut projects = store.load()?;
-    let Some(project_index) = projects
+fn close_select_interactive<'a>(projects: &'a [Project]) -> Result<Option<&'a Project>> {
+    let activated: Vec<&Project> = projects
         .iter()
-        .position(|p| p.id == selected_project.id)
-    else {
-        println!("{} is not managed yet.", selected_project.id);
-        return Ok(());
-    };
-    let project = projects[project_index].clone();
+        .filter(|p| p.status == ProjectStatus::Activated)
+        .collect();
 
+    if activated.is_empty() {
+        println!("No activated projects to close.");
+        return Ok(None);
+    }
+
+    let choices: Vec<String> = activated
+        .iter()
+        .map(|p| format!("{}  {}", p.owner_repo(), p.path.display()))
+        .collect();
+
+    let selected = choose_one("Activated projects", &choices)?;
+    match selected {
+        Some(line) => {
+            let name = line.split_whitespace().next().unwrap().to_string();
+            Ok(projects.iter().find(|p| p.owner_repo() == name))
+        }
+        None => {
+            println!("Cancelled.");
+            Ok(None)
+        }
+    }
+}
+
+fn execute_close(store: &ProjectStore, config: &Config, project: &Project, yes: bool) -> Result<()> {
     let size = if project.path.exists() {
         scan_project_cache_size(&project.path, &config.cache_targets)
             .with_context(|| format!("failed to scan {}", project.path.display()))?
@@ -338,6 +507,17 @@ fn close_project(store: &ProjectStore, config: &Config, query: &str, yes: bool) 
         return Ok(());
     }
 
+    let removed = execute_close_inner(store, config, project)?;
+
+    println!(
+        "Closed {}. Removed {}.",
+        project.owner_repo(),
+        format_bytes(removed)
+    );
+    Ok(())
+}
+
+fn execute_close_inner(store: &ProjectStore, config: &Config, project: &Project) -> Result<u64> {
     if let Some(changes) = uncommitted_changes(&project.path)? {
         println!("Uncommitted changes in {}:", changes.root.display());
         for entry in changes.entries.iter().take(10) {
@@ -366,15 +546,39 @@ fn close_project(store: &ProjectStore, config: &Config, query: &str, yes: bool) 
     } else {
         0
     };
-    projects[project_index].status = ProjectStatus::Local;
-    projects[project_index].cache_size_bytes = Some(0);
+
+    let mut projects = store.load()?;
+    if let Some(entry) = projects.iter_mut().find(|p| p.id == project.id) {
+        entry.status = ProjectStatus::Local;
+        entry.cache_size_bytes = Some(0);
+    }
     store.save(&projects)?;
-    println!(
-        "Closed {}. Removed {}.",
-        project.owner_repo(),
-        format_bytes(removed)
-    );
-    Ok(())
+
+    Ok(removed)
+}
+
+fn get_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
+    let selection = if let Some(p) = project {
+        normalize_project_id(&p)
+    } else {
+        let spinner = progress_spinner("Fetching remote repositories");
+        let repos = list_remote_repositories()?;
+        spinner.finish_and_clear();
+
+        if repos.is_empty() {
+            anyhow::bail!("No remote repositories found.");
+        }
+
+        let choices: Vec<String> = repos.iter().map(|r| r.to_string()).collect();
+        let selected = choose_one("Remote repositories", &choices)?
+            .context("no repository selected")?;
+        normalize_project_id(&selected)
+    };
+
+    let path = ensure_local_repo(&selection)?;
+    let project = store.upsert_access(&selection.id, &path)?;
+    println!("Opened {} at {}", selection.id, path.display());
+    open_subshell(&project.owner_repo(), &path)
 }
 
 fn clean_projects(
@@ -568,34 +772,8 @@ fn prune_projects(store: &ProjectStore, yes: bool) -> Result<()> {
     Ok(())
 }
 
-fn log_projects(store: &ProjectStore) -> Result<()> {
-    let mut projects = store.load()?;
-    if projects.is_empty() {
-        println!("No project history.");
-        return Ok(());
-    }
-
-    projects.sort_by_key(|b| std::cmp::Reverse(b.last_accessed_at));
-
-    println!(
-        "{:<36} {:<10} {:>12} Path",
-        "Project", "Status", "Last Accessed"
-    );
-    for p in &projects {
-        let age = human_days_since(p.last_accessed_at);
-        let status = match p.status {
-            ProjectStatus::Activated => "Activated",
-            ProjectStatus::Local => "Local",
-        };
-        println!(
-            "{:<36} {:<10} {:>12} {}",
-            p.owner_repo(),
-            status,
-            format!("{age}d ago"),
-            p.path.display()
-        );
-    }
-    Ok(())
+fn log_projects(store: &ProjectStore, config: &Config) -> Result<()> {
+    list_projects(store, config, false, false, true)
 }
 
 fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> {
@@ -615,21 +793,36 @@ fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> 
     Ok(())
 }
 
-fn status_projects(store: &ProjectStore, config: &Config) -> Result<()> {
-    let mut projects = store.load()?;
+fn status_projects(store: &ProjectStore, config: &Config, all: bool) -> Result<()> {
+    let projects = store.load()?;
     if projects.is_empty() {
         println!("No managed projects.");
         return Ok(());
     }
 
-    refresh_cache_sizes(&mut projects, config)?;
-    store.save(&projects)?;
+    let filtered: Vec<Project> = if all {
+        projects
+    } else {
+        projects
+            .into_iter()
+            .filter(|p| p.status == ProjectStatus::Activated)
+            .collect()
+    };
 
-    let bar = progress_bar("Checking git status", projects.len() as u64);
-    let counts = compute_git_counts(&projects);
+    if filtered.is_empty() {
+        println!("No activated projects. Use --all to include local projects.");
+        return Ok(());
+    }
+
+    let mut filtered = filtered;
+    refresh_cache_sizes(&mut filtered, config)?;
+    store.save(&filtered)?;
+
+    let bar = progress_bar("Checking git status", filtered.len() as u64);
+    let counts = compute_git_counts(&filtered);
 
     let mut rows: Vec<StatusRow> = Vec::new();
-    for (project, c) in projects.iter().zip(counts.iter()) {
+    for (project, c) in filtered.iter().zip(counts.iter()) {
         rows.push(StatusRow {
             project: project.owner_repo().to_string(),
             status: match project.status {
@@ -716,30 +909,12 @@ fn compute_git_counts(projects: &[Project]) -> Vec<GitCounts> {
     })
 }
 
-fn sort_projects_for_dashboard(projects: &mut [Project]) {
-    projects.sort_by(|left, right| {
-        let left_rank = status_rank(left.status);
-        let right_rank = status_rank(right.status);
-
-        left_rank
-            .cmp(&right_rank)
-            .then_with(|| right.last_accessed_at.cmp(&left.last_accessed_at))
-            .then_with(|| left.owner_repo().cmp(right.owner_repo()))
-    });
-}
-
-fn status_rank(status: ProjectStatus) -> u8 {
-    match status {
-        ProjectStatus::Activated => 0,
-        ProjectStatus::Local => 1,
-    }
-}
-
 #[derive(Debug, Clone)]
 struct DashboardRow {
     project: String,
     status: String,
     age: String,
+    age_days: i64,
     dirty: String,
     ahead: String,
     behind: String,
@@ -754,76 +929,6 @@ impl DashboardRow {
             self.project, self.status, self.age, self.dirty, self.ahead, self.behind, self.cache, self.path
         )
     }
-}
-
-fn dashboard_rows(projects: &[Project], include_remote: bool) -> Result<Vec<DashboardRow>> {
-    let counts = compute_git_counts(projects);
-    let mut rows: Vec<DashboardRow> = Vec::new();
-    for (project, c) in projects.iter().zip(counts.iter()) {
-        let age = human_days_since(project.last_accessed_at);
-        let dirty = if c.uncommitted > 0 {
-            c.uncommitted.to_string()
-        } else {
-            "clean".to_string()
-        };
-        rows.push(DashboardRow {
-            project: project.owner_repo().to_string(),
-            status: match project.status {
-                ProjectStatus::Activated => "Activated",
-                ProjectStatus::Local => "Local",
-            }
-            .to_string(),
-            age: format!("{age}d"),
-            dirty,
-            ahead: c.ahead.to_string(),
-            behind: c.behind.to_string(),
-            cache: format_bytes(project.cache_size_bytes.unwrap_or(0)),
-            path: project.path.display().to_string(),
-        });
-    }
-
-    let managed_ids: std::collections::HashSet<_> =
-        projects.iter().map(|project| project.id.as_str()).collect();
-    for repo in list_local_repositories()? {
-        if managed_ids.contains(repo.id.as_str()) {
-            continue;
-        }
-        rows.push(DashboardRow {
-            project: repo.owner_repo,
-            status: "Local".to_string(),
-            age: "-".to_string(),
-            dirty: "-".to_string(),
-            ahead: "-".to_string(),
-            behind: "-".to_string(),
-            cache: "-".to_string(),
-            path: repo.path.display().to_string(),
-        });
-    }
-
-    if include_remote {
-        let local_ids: std::collections::HashSet<_> =
-            rows.iter().map(|row| row.project.clone()).collect();
-        let spinner = progress_spinner("Fetching remote repositories from GitHub");
-        let remote_repositories = list_remote_repositories();
-        spinner.finish_and_clear();
-        for repo in remote_repositories? {
-            if local_ids.contains(repo.as_str()) {
-                continue;
-            }
-            rows.push(DashboardRow {
-                project: repo,
-                status: "Remote".to_string(),
-                age: "-".to_string(),
-                dirty: "-".to_string(),
-                ahead: "-".to_string(),
-                behind: "-".to_string(),
-                cache: "-".to_string(),
-                path: "-".to_string(),
-            });
-        }
-    }
-
-    Ok(rows)
 }
 
 fn confirm(prompt: &str) -> Result<bool> {
