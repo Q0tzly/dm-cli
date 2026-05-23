@@ -20,6 +20,9 @@ pub fn parse_age(input: &str) -> Result<Duration> {
         "d" => Ok(Duration::days(value)),
         "w" => Ok(Duration::weeks(value)),
         "m" => Ok(Duration::days(value * 30)),
+        u if u.chars().all(|c| c.is_ascii_digit()) => {
+            bail!("missing unit suffix (expected d, w, or m); did you mean \"{u}d\"?")
+        }
         _ => bail!("unsupported duration unit {unit:?}; use d, w, or m"),
     }
 }

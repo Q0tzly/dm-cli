@@ -163,7 +163,11 @@ fn ghq_list_exact(id: &str) -> Result<Option<PathBuf>> {
         .context("failed to run ghq list")?;
 
     if !output.status.success() {
-        return Ok(None);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not found") {
+            return Ok(None);
+        }
+        anyhow::bail!("ghq list --exact failed: {}", stderr.trim());
     }
 
     let path = String::from_utf8(output.stdout).context("ghq output was not UTF-8")?;

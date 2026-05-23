@@ -54,11 +54,9 @@ pub fn run() -> Result<()> {
 }
 
 fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
-    warn_about_uncommitted_changes(
-        &env::current_dir().context("failed to determine current directory")?,
-        "open another project",
-        true,
-    )?;
+    if let Ok(cwd) = env::current_dir() {
+        warn_about_uncommitted_changes(&cwd, "open another project", true)?;
+    }
 
     let selection = if let Some(p) = project {
         search_and_select_project(&p, store)?
@@ -74,7 +72,7 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
             let selected = choose_one("Managed projects", &choices)?;
             match selected {
                 Some(line) => {
-                    let name = line.split_whitespace().next().unwrap().to_string();
+                    let name = parse_choice_name(&line)?;
                     resolve_project(Some(name))?
                 }
                 None => resolve_project(None)?,
@@ -86,6 +84,13 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     store.upsert_access(&selection.id, &path)?;
     println!("Opening {} at {}", selection.id, path.display());
     open_subshell(&selection.owner_repo, &path)
+}
+
+fn parse_choice_name(line: &str) -> Result<String> {
+    line.split_whitespace()
+        .next()
+        .map(|s| s.to_string())
+        .context("unexpected empty selection line")
 }
 
 fn search_and_select_project(
@@ -141,12 +146,12 @@ fn search_and_select_project(
         _ => {
             let choices: Vec<String> = matches
                 .iter()
-                .map(|c| format!("{}  {}", c.owner_repo, c.path.as_deref().unwrap_or("(remote)")))
+                .map(|c| format!("{}  {}", c.owner_repo, c.path.as_deref().unwrap()))
                 .collect();
 
             let selected = choose_one("Select local project", &choices)?
                 .context("no project selected")?;
-            let name = selected.split_whitespace().next().unwrap().to_string();
+            let name = parse_choice_name(&selected)?;
             resolve_project(Some(name))
         }
     }
@@ -367,7 +372,13 @@ fn close_all_activated(store: &ProjectStore, config: &Config, yes: bool) -> Resu
         .iter()
         .map(|p| {
             if p.path.exists() {
-                scan_project_cache_size(&p.path, &config.cache_targets).unwrap_or(0)
+                match scan_project_cache_size(&p.path, &config.cache_targets) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Warning: failed to scan {}: {e}", p.path.display());
+                        0
+                    }
+                }
             } else {
                 0
             }
@@ -441,7 +452,7 @@ fn close_select_by_query<'a>(
 
             let selected = choose_one("Select project to close", &choices)?
                 .context("no project selected")?;
-            let name = selected.split_whitespace().next().unwrap().to_string();
+            let name = parse_choice_name(&selected)?;
             let sel_id = format!("github.com/{name}");
             Ok(projects.iter().find(|p| p.id == sel_id || p.owner_repo() == name))
         }
@@ -467,7 +478,7 @@ fn close_select_interactive(projects: &[Project]) -> Result<Option<&Project>> {
     let selected = choose_one("Activated projects", &choices)?;
     match selected {
         Some(line) => {
-            let name = line.split_whitespace().next().unwrap().to_string();
+            let name = line.split_whitespace().next().context("unexpected empty selection line")?.to_string();
             Ok(projects.iter().find(|p| p.owner_repo() == name))
         }
         None => {
@@ -928,7 +939,7 @@ fn confirm(prompt: &str) -> Result<bool> {
     io::stdin()
         .read_line(&mut input)
         .context("failed to read confirmation")?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+    Ok(matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
 
 fn warn_about_uncommitted_changes(
