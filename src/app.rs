@@ -843,6 +843,72 @@ fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> 
 
 fn status_projects(store: &ProjectStore, config: &Config, all: bool) -> Result<()> {
     let mut projects = store.load()?;
+
+    if all {
+        let local_repos = list_local_repositories()?;
+        let managed_ids: std::collections::HashSet<_> =
+            projects.iter().map(|p| p.id.as_str()).collect();
+
+        let mut entries: Vec<StatusEntry> = projects
+            .iter()
+            .map(|p| StatusEntry {
+                label: p.owner_repo().to_string(),
+                status: match p.status {
+                    ProjectStatus::Activated => "Activated",
+                    ProjectStatus::Local => "Local",
+                }
+                .to_string(),
+                cache: format_bytes(p.cache_size_bytes.unwrap_or(0)),
+                path: p.path.clone(),
+            })
+            .collect();
+
+        for repo in &local_repos {
+            if !managed_ids.contains(repo.id.as_str()) {
+                entries.push(StatusEntry {
+                    label: repo.owner_repo.clone(),
+                    status: "Local".to_string(),
+                    cache: "-".to_string(),
+                    path: repo.path.clone(),
+                });
+            }
+        }
+
+        if entries.is_empty() {
+            println!("No local repositories.");
+            return Ok(());
+        }
+
+        let bar = progress_bar("Checking git status", entries.len() as u64);
+        let counts = compute_git_counts_for_paths(entries.iter().map(|e| &e.path));
+
+        let mut rows: Vec<StatusRow> = Vec::new();
+        for (entry, c) in entries.iter().zip(counts.iter()) {
+            rows.push(StatusRow {
+                project: entry.label.clone(),
+                status: entry.status.clone(),
+                uncommitted: c.uncommitted,
+                ahead: c.ahead,
+                behind: c.behind,
+                cache: entry.cache.clone(),
+                path: entry.path.display().to_string(),
+            });
+            bar.inc(1);
+        }
+        bar.finish_and_clear();
+
+        println!(
+            "{:<36} {:<10} {:>6} {:>5} {:>5} {:>10} Path",
+            "Project", "Status", "Dirty", "Ahead", "Behind", "Cache"
+        );
+        for row in &rows {
+            println!("{}", row.render());
+        }
+
+        return Ok(());
+    }
+
+    // Default: activated only
     if projects.is_empty() {
         println!("No managed projects.");
         return Ok(());
@@ -851,14 +917,10 @@ fn status_projects(store: &ProjectStore, config: &Config, all: bool) -> Result<(
     refresh_cache_sizes(&mut projects, config)?;
     store.save(&projects)?;
 
-    let displayed: Vec<Project> = if all {
-        projects
-    } else {
-        projects
-            .into_iter()
-            .filter(|p| p.status == ProjectStatus::Activated)
-            .collect()
-    };
+    let displayed: Vec<Project> = projects
+        .into_iter()
+        .filter(|p| p.status == ProjectStatus::Activated)
+        .collect();
 
     if displayed.is_empty() {
         println!("No activated projects. Use --all to include local projects.");
@@ -898,6 +960,13 @@ fn status_projects(store: &ProjectStore, config: &Config, all: bool) -> Result<(
     Ok(())
 }
 
+struct StatusEntry {
+    label: String,
+    status: String,
+    cache: String,
+    path: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 struct StatusRow {
     project: String,
@@ -927,6 +996,36 @@ struct GitCounts {
     uncommitted: usize,
     ahead: usize,
     behind: usize,
+}
+
+fn compute_git_counts_for_paths<'a>(
+    paths: impl Iterator<Item = &'a PathBuf>,
+) -> Vec<GitCounts> {
+    std::thread::scope(|s| {
+        paths
+            .map(|path| {
+                let path = path.clone();
+                s.spawn(move || GitCounts {
+                    uncommitted: uncommitted_changes(&path)
+                        .ok()
+                        .flatten()
+                        .map(|c| c.entries.len())
+                        .unwrap_or(0),
+                    ahead: unpushed_commits(&path)
+                        .ok()
+                        .flatten()
+                        .map(|c| c.entries.len())
+                        .unwrap_or(0),
+                    behind: unpulled_commits(&path)
+                        .ok()
+                        .flatten()
+                        .map(|c| c.entries.len())
+                        .unwrap_or(0),
+                })
+            })
+            .map(|h| h.join().unwrap())
+            .collect()
+    })
 }
 
 fn compute_git_counts(projects: &[Project]) -> Vec<GitCounts> {
