@@ -177,11 +177,7 @@ fn list_projects(
         store.save(&projects)?;
     }
 
-    let mut rows = list_dashboard_rows(&projects, remote, size)?;
-
-    if log && !size {
-        rows.sort_by_key(|b| std::cmp::Reverse(b.age_days));
-    }
+    let rows = list_dashboard_rows(&projects, remote, size)?;
 
     list_print(&rows, size);
     Ok(())
@@ -213,7 +209,6 @@ fn list_dashboard_rows(
             }
             .to_string(),
             age: if size { format!("{age}d") } else { "-".to_string() },
-            age_days: age,
             dirty: if size && c.uncommitted > 0 { c.uncommitted.to_string() } else { "-".to_string() },
             ahead: if size { c.ahead.to_string() } else { "-".to_string() },
             behind: if size { c.behind.to_string() } else { "-".to_string() },
@@ -237,7 +232,6 @@ fn list_dashboard_rows(
             project: repo.owner_repo.clone(),
             status: "Local".to_string(),
             age: "-".to_string(),
-            age_days: 0,
             dirty: "-".to_string(),
             ahead: "-".to_string(),
             behind: "-".to_string(),
@@ -260,7 +254,6 @@ fn list_dashboard_rows(
                 project: repo,
                 status: "Remote".to_string(),
                 age: "-".to_string(),
-                age_days: 0,
                 dirty: "-".to_string(),
                 ahead: "-".to_string(),
                 behind: "-".to_string(),
@@ -794,13 +787,16 @@ fn refresh_cache_sizes(projects: &mut [Project], config: &Config) -> Result<()> 
 }
 
 fn status_projects(store: &ProjectStore, config: &Config, all: bool) -> Result<()> {
-    let projects = store.load()?;
+    let mut projects = store.load()?;
     if projects.is_empty() {
         println!("No managed projects.");
         return Ok(());
     }
 
-    let filtered: Vec<Project> = if all {
+    refresh_cache_sizes(&mut projects, config)?;
+    store.save(&projects)?;
+
+    let displayed: Vec<Project> = if all {
         projects
     } else {
         projects
@@ -809,20 +805,16 @@ fn status_projects(store: &ProjectStore, config: &Config, all: bool) -> Result<(
             .collect()
     };
 
-    if filtered.is_empty() {
+    if displayed.is_empty() {
         println!("No activated projects. Use --all to include local projects.");
         return Ok(());
     }
 
-    let mut filtered = filtered;
-    refresh_cache_sizes(&mut filtered, config)?;
-    store.save(&filtered)?;
-
-    let bar = progress_bar("Checking git status", filtered.len() as u64);
-    let counts = compute_git_counts(&filtered);
+    let bar = progress_bar("Checking git status", displayed.len() as u64);
+    let counts = compute_git_counts(&displayed);
 
     let mut rows: Vec<StatusRow> = Vec::new();
-    for (project, c) in filtered.iter().zip(counts.iter()) {
+    for (project, c) in displayed.iter().zip(counts.iter()) {
         rows.push(StatusRow {
             project: project.owner_repo().to_string(),
             status: match project.status {
@@ -914,7 +906,6 @@ struct DashboardRow {
     project: String,
     status: String,
     age: String,
-    age_days: i64,
     dirty: String,
     ahead: String,
     behind: String,
