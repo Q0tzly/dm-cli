@@ -152,7 +152,7 @@ fn gh_api_json<T: for<'de> Deserialize<'de>>(endpoint: &str) -> Result<T> {
     serde_json::from_slice(&output.stdout).with_context(|| format!("failed to parse {endpoint}"))
 }
 
-fn ghq_list_exact(id: &str) -> Result<Option<PathBuf>> {
+pub fn ghq_list_exact(id: &str) -> Result<Option<PathBuf>> {
     let output = Command::new("ghq")
         .arg("list")
         .arg("--full-path")

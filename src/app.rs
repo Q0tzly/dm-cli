@@ -6,8 +6,8 @@ use crate::config::{config_path, Config};
 use crate::duration::{human_days_since, parse_age};
 use crate::git::{pull_ff_only, uncommitted_changes, unpulled_commits, unpushed_commits};
 use crate::github::{
-    ensure_local_repo, list_local_repositories, list_remote_repositories, normalize_project_id,
-    resolve_project, RepoSelection,
+    ensure_local_repo, ghq_list_exact, list_local_repositories, list_remote_repositories,
+    normalize_project_id, resolve_project, RepoSelection,
 };
 use crate::paths::XdgPathProvider;
 use crate::project::{Project, ProjectStatus};
@@ -19,6 +19,7 @@ use chrono::Utc;
 use clap::{CommandFactory, Parser};
 use std::env;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::Command as ShellCommand;
 
 pub fn run() -> Result<()> {
@@ -63,27 +64,39 @@ fn open_project(project: Option<String>, store: &ProjectStore) -> Result<()> {
     } else {
         let projects = store.load()?;
         if projects.is_empty() {
-            resolve_project(None)?
-        } else {
-            let choices: Vec<String> = projects
-                .iter()
-                .map(|p| format!("{}  {}", p.owner_repo(), p.path.display()))
-                .collect();
-            let selected = choose_one("Managed projects", &choices)?;
-            match selected {
-                Some(line) => {
-                    let name = parse_choice_name(&line)?;
-                    resolve_project(Some(name))?
-                }
-                None => resolve_project(None)?,
+            println!("No managed projects. Use `rem get` to clone a remote repository.");
+            return Ok(());
+        }
+        let choices: Vec<String> = projects
+            .iter()
+            .map(|p| format!("{}  {}", p.owner_repo(), p.path.display()))
+            .collect();
+        let selected = choose_one("Managed projects", &choices)?;
+        match selected {
+            Some(line) => {
+                let name = parse_choice_name(&line)?;
+                normalize_project_id(&name)
+            }
+            None => {
+                println!("Cancelled.");
+                return Ok(());
             }
         }
     };
 
-    let path = ensure_local_repo(&selection)?;
+    let path = open_local_repo(&selection)?;
     store.upsert_access(&selection.id, &path)?;
     println!("Opening {} at {}", selection.id, path.display());
     open_subshell(&selection.owner_repo, &path)
+}
+
+fn open_local_repo(selection: &RepoSelection) -> Result<PathBuf> {
+    ghq_list_exact(&selection.id)?.with_context(|| {
+        format!(
+            "{} not found locally. Use `rem get {}` to clone it.",
+            selection.owner_repo, selection.owner_repo
+        )
+    })
 }
 
 fn parse_choice_name(line: &str) -> Result<String> {
