@@ -12,7 +12,7 @@ use crate::github::{
 use crate::paths::XdgPathProvider;
 use crate::project::{Project, ProjectStatus};
 use crate::select::choose_one;
-use crate::shell::open_subshell;
+use crate::shell::{generate_wrapper, open_subshell};
 use crate::store::ProjectStore;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -48,6 +48,10 @@ pub fn run() -> Result<()> {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+            let wrapper = generate_wrapper(&shell);
+            if !wrapper.is_empty() {
+                print!("{wrapper}");
+            }
             Ok(())
         }
         None => dashboard_projects(&store, &config),
