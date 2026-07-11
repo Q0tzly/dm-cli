@@ -1,24 +1,14 @@
-use crate::cache::{format_bytes};
-use crate::cli::{Cli, Command};
-use crate::config::{config_path, Config};
-use crate::duration::{human_days_since, parse_age};
-use crate::git::{pull_ff_only, uncommitted_changes, unpulled_commits, unpushed_commits};
+use crate::commands::util::{parse_choice_name, warn_about_uncommitted_changes};
 use crate::github::{
-    ensure_local_repo, ghq_list_exact, list_local_repositories, list_remote_repositories,
-    normalize_project_id, resolve_project, RepoSelection,
+    RepoSelection, ghq_list_exact, list_local_repositories, normalize_project_id, resolve_project,
 };
-use crate::paths::XdgPathProvider;
-use crate::project::{Project, ProjectStatus};
+use crate::project::Project;
 use crate::select::choose_one;
-use crate::shell::{generate_wrapper, open_subshell};
+use crate::shell::open_subshell;
 use crate::store::ProjectStore;
 use anyhow::{Context, Result};
-use chrono::Utc;
-use clap::{CommandFactory, Parser};
 use std::env;
-use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::Command as ShellCommand;
 
 #[derive(Debug, Clone)]
 struct LocalEntry {
@@ -74,8 +64,7 @@ fn merge_local_entries(managed: &[Project]) -> Result<Vec<LocalEntry>> {
         })
         .collect();
 
-    let managed_ids: std::collections::HashSet<_> =
-        managed.iter().map(|p| p.id.as_str()).collect();
+    let managed_ids: std::collections::HashSet<_> = managed.iter().map(|p| p.id.as_str()).collect();
 
     for repo in list_local_repositories()? {
         if !managed_ids.contains(repo.id.as_str()) {
@@ -98,17 +87,7 @@ fn open_local_repo(selection: &RepoSelection) -> Result<PathBuf> {
     })
 }
 
-fn parse_choice_name(line: &str) -> Result<String> {
-    line.split_whitespace()
-        .next()
-        .map(|s| s.to_string())
-        .context("unexpected empty selection line")
-}
-
-fn search_and_select_project(
-    query: &str,
-    store: &ProjectStore,
-) -> Result<RepoSelection> {
+fn search_and_select_project(query: &str, store: &ProjectStore) -> Result<RepoSelection> {
     let query_lower = query.to_lowercase();
 
     let managed_projects = store.load()?;
@@ -161,8 +140,8 @@ fn search_and_select_project(
                 .map(|c| format!("{}  {}", c.owner_repo, c.path.as_deref().unwrap()))
                 .collect();
 
-            let selected = choose_one("Select local project", &choices)?
-                .context("no project selected")?;
+            let selected =
+                choose_one("Select local project", &choices)?.context("no project selected")?;
             let name = parse_choice_name(&selected)?;
             resolve_project(Some(name))
         }

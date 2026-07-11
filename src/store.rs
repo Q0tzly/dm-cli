@@ -44,8 +44,20 @@ impl ProjectStore {
         }
 
         let raw = serde_json::to_string_pretty(projects).context("failed to serialize projects")?;
-        fs::write(&self.path, format!("{raw}\n"))
-            .with_context(|| format!("failed to write {}", self.path.display()))
+        let temp_path = self.path.with_extension(format!(
+            "json.{}.{}.tmp",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::write(&temp_path, format!("{raw}\n"))
+            .with_context(|| format!("failed to write {}", temp_path.display()))?;
+        fs::rename(&temp_path, &self.path).with_context(|| {
+            format!(
+                "failed to replace {} with {}",
+                self.path.display(),
+                temp_path.display()
+            )
+        })
     }
 
     pub fn upsert_access(&self, id: &str, path: &Path) -> Result<Project> {

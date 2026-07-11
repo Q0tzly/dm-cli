@@ -1,24 +1,11 @@
 use crate::cache::{clean_project, format_bytes, scan_project_cache_size};
-use crate::cli::{Cli, Command};
-use crate::config::{config_path, Config};
-use crate::duration::{human_days_since, parse_age};
-use crate::git::{pull_ff_only, uncommitted_changes, unpulled_commits, unpushed_commits};
-use crate::github::{
-    ensure_local_repo, ghq_list_exact, list_local_repositories, list_remote_repositories,
-    normalize_project_id, resolve_project, RepoSelection,
-};
-use crate::paths::XdgPathProvider;
+use crate::commands::util::{confirm, parse_choice_name};
+use crate::config::Config;
+use crate::git::{uncommitted_changes, unpushed_commits};
 use crate::project::{Project, ProjectStatus};
 use crate::select::choose_one;
-use crate::shell::{generate_wrapper, open_subshell};
 use crate::store::ProjectStore;
 use anyhow::{Context, Result};
-use chrono::Utc;
-use clap::{CommandFactory, Parser};
-use std::env;
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::process::Command as ShellCommand;
 
 pub fn close_project(
     store: &ProjectStore,
@@ -93,7 +80,11 @@ fn close_all_activated(store: &ProjectStore, config: &Config, yes: bool) -> Resu
         match execute_close_inner(store, config, project) {
             Ok(removed) => {
                 closed += 1;
-                println!("  ✓ {} (removed {})", project.owner_repo(), format_bytes(removed));
+                println!(
+                    "  ✓ {} (removed {})",
+                    project.owner_repo(),
+                    format_bytes(removed)
+                );
             }
             Err(e) => {
                 errors += 1;
@@ -119,10 +110,7 @@ fn close_all_activated(store: &ProjectStore, config: &Config, yes: bool) -> Resu
     Ok(())
 }
 
-fn close_select_by_query<'a>(
-    projects: &'a [Project],
-    query: &str,
-) -> Result<Option<&'a Project>> {
+fn close_select_by_query<'a>(projects: &'a [Project], query: &str) -> Result<Option<&'a Project>> {
     let query_lower = query.to_lowercase();
     let matches: Vec<&Project> = projects
         .iter()
@@ -141,11 +129,13 @@ fn close_select_by_query<'a>(
                 .map(|p| format!("{}  {}", p.owner_repo(), p.path.display()))
                 .collect();
 
-            let selected = choose_one("Select project to close", &choices)?
-                .context("no project selected")?;
+            let selected =
+                choose_one("Select project to close", &choices)?.context("no project selected")?;
             let name = parse_choice_name(&selected)?;
             let sel_id = format!("github.com/{name}");
-            Ok(projects.iter().find(|p| p.id == sel_id || p.owner_repo() == name))
+            Ok(projects
+                .iter()
+                .find(|p| p.id == sel_id || p.owner_repo() == name))
         }
     }
 }
@@ -169,7 +159,7 @@ fn close_select_interactive(projects: &[Project]) -> Result<Option<&Project>> {
     let selected = choose_one("Activated projects", &choices)?;
     match selected {
         Some(line) => {
-            let name = line.split_whitespace().next().context("unexpected empty selection line")?.to_string();
+            let name = parse_choice_name(&line)?;
             Ok(projects.iter().find(|p| p.owner_repo() == name))
         }
         None => {
@@ -179,7 +169,12 @@ fn close_select_interactive(projects: &[Project]) -> Result<Option<&Project>> {
     }
 }
 
-fn execute_close(store: &ProjectStore, config: &Config, project: &Project, yes: bool) -> Result<()> {
+fn execute_close(
+    store: &ProjectStore,
+    config: &Config,
+    project: &Project,
+    yes: bool,
+) -> Result<()> {
     let size = if project.path.exists() {
         scan_project_cache_size(&project.path, &config.cache_targets)
             .with_context(|| format!("failed to scan {}", project.path.display()))?
@@ -249,41 +244,4 @@ fn execute_close_inner(store: &ProjectStore, config: &Config, project: &Project)
     store.save(&projects)?;
 
     Ok(removed)
-}
-
-fn confirm(prompt: &str) -> Result<bool> {
-    print!("{prompt}");
-    io::stdout().flush().context("failed to flush stdout")?;
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .context("failed to read confirmation")?;
-    Ok(matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
-}
-
-fn warn_about_uncommitted_changes(
-    path: &std::path::Path,
-    action: &str,
-    require_confirmation: bool,
-) -> Result<()> {
-    let Some(changes) = uncommitted_changes(path)? else {
-        return Ok(());
-    };
-
-    println!(
-        "Warning: {} has uncommitted changes:",
-        changes.root.display()
-    );
-    for entry in changes.entries.iter().take(10) {
-        println!("  {entry}");
-    }
-    if changes.entries.len() > 10 {
-        println!("  ... and {} more", changes.entries.len() - 10);
-    }
-
-    if require_confirmation && !confirm(&format!("Continue to {action}? [y/N] "))? {
-        anyhow::bail!("cancelled because uncommitted changes are present");
-    }
-
-    Ok(())
 }
