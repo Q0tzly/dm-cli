@@ -1,3 +1,4 @@
+use crate::project::Project;
 use anyhow::{Context, Result, bail};
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -98,6 +99,23 @@ pub fn clean_project(project_root: &Path, targets: &[String]) -> Result<u64> {
     }
 
     Ok(removed_bytes)
+}
+
+pub fn refresh_cache_sizes(projects: &mut [Project], targets: &[String]) -> Result<()> {
+    let bar = progress_bar("Scanning local cache", projects.len() as u64);
+    for project in projects {
+        project.cache_size_bytes = if project.path.exists() {
+            Some(
+                scan_project_cache_size(&project.path, targets)
+                    .with_context(|| format!("failed to scan {}", project.path.display()))?,
+            )
+        } else {
+            Some(0)
+        };
+        bar.inc(1);
+    }
+    bar.finish_and_clear();
+    Ok(())
 }
 
 pub fn progress_bar(message: &str, len: u64) -> ProgressBar {

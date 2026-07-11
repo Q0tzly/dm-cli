@@ -31,5 +31,13 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+      - name: Verify tag matches package version
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+        run: |
+          tag_version="${TAG_VERSION#v}"
+          package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$tag_version" = "$package_version"
+
       - name: Publish to crates.io
         run: cargo publish --token ${{ secrets.CRATES_TOKEN }}

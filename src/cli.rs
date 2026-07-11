@@ -20,12 +20,6 @@ pub enum Command {
         /// Repository id (supports partial match) such as owner/repo or github.com/owner/repo.
         project: Option<String>,
     },
-    /// Open a repository in a subshell.
-    #[command(hide = true)]
-    Cd {
-        /// Repository id such as owner/repo or github.com/owner/repo.
-        project: Option<String>,
-    },
     /// Print repositories to standard output.
     #[command(alias = "l")]
     List {
@@ -96,9 +90,9 @@ pub enum Command {
         yes: bool,
     },
     /// Show project access history.
-    #[command(alias = "h", hide = true)]
+    #[command(alias = "h")]
     Log,
-    /// Generate shell completion script.
+    /// Generate shell completions and the optional shell wrapper.
     Init {
         /// Shell to generate completions for.
         shell: Shell,

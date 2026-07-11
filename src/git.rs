@@ -1,4 +1,6 @@
+use crate::project::Project;
 use anyhow::{Context, Result, bail};
+use indicatif::ProgressBar;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -140,7 +142,57 @@ pub fn pull_ff_only(path: &Path) -> Result<bool> {
     Ok(!stdout.contains("Already up to date"))
 }
 
-fn repo_root(path: &Path) -> Result<Option<PathBuf>> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitCounts {
+    pub uncommitted: usize,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+pub fn compute_git_counts(projects: &[Project], progress: Option<&ProgressBar>) -> Vec<GitCounts> {
+    compute_git_counts_for_paths(projects.iter().map(|project| &project.path), progress)
+}
+
+pub fn compute_git_counts_for_paths<'a>(
+    paths: impl Iterator<Item = &'a PathBuf>,
+    progress: Option<&ProgressBar>,
+) -> Vec<GitCounts> {
+    let progress = progress.cloned();
+    std::thread::scope(|scope| {
+        paths
+            .map(|path| {
+                let path = path.clone();
+                let progress = progress.clone();
+                scope.spawn(move || {
+                    let counts = GitCounts {
+                        uncommitted: uncommitted_changes(&path)
+                            .ok()
+                            .flatten()
+                            .map(|changes| changes.entries.len())
+                            .unwrap_or(0),
+                        ahead: unpushed_commits(&path)
+                            .ok()
+                            .flatten()
+                            .map(|commits| commits.entries.len())
+                            .unwrap_or(0),
+                        behind: unpulled_commits(&path)
+                            .ok()
+                            .flatten()
+                            .map(|commits| commits.entries.len())
+                            .unwrap_or(0),
+                    };
+                    if let Some(progress) = progress {
+                        progress.inc(1);
+                    }
+                    counts
+                })
+            })
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    })
+}
+
+pub fn repo_root(path: &Path) -> Result<Option<PathBuf>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(path)

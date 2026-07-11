@@ -104,7 +104,7 @@ pub fn ensure_local_repo(selection: &RepoSelection) -> Result<PathBuf> {
 }
 
 pub fn normalize_project_id(input: &str) -> RepoSelection {
-    let trimmed = input.trim().trim_end_matches(".git");
+    let trimmed = input.trim().strip_suffix(".git").unwrap_or(input.trim());
     let owner_repo = trimmed
         .strip_prefix("https://github.com/")
         .or_else(|| trimmed.strip_prefix("git@github.com:"))
@@ -129,10 +129,37 @@ fn github_owners() -> Result<Vec<String>> {
 }
 
 fn github_repos(owner: &str) -> Result<Vec<String>> {
-    let repos: Vec<Repo> = gh_api_json(&format!("users/{owner}/repos?per_page=100"))?;
+    let user: Login = gh_api_json("user")?;
+    let endpoint = if owner == user.login {
+        "user/repos?per_page=100&affiliation=owner,collaborator,organization_member".to_string()
+    } else {
+        format!("orgs/{owner}/repos?per_page=100&type=all")
+    };
+    let repos: Vec<Repo> = gh_api_json_paginated(&endpoint)?;
     let mut names: Vec<_> = repos.into_iter().map(|repo| repo.full_name).collect();
     names.sort();
     Ok(names)
+}
+
+fn gh_api_json_paginated<T: for<'de> Deserialize<'de>>(endpoint: &str) -> Result<Vec<T>> {
+    let output = Command::new("gh")
+        .arg("api")
+        .arg("--paginate")
+        .arg("--slurp")
+        .arg(endpoint)
+        .output()
+        .with_context(|| format!("failed to run gh api {endpoint}"))?;
+
+    if !output.status.success() {
+        bail!(
+            "gh api {endpoint} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let pages: Vec<Vec<T>> = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("failed to parse paginated response for {endpoint}"))?;
+    Ok(pages.into_iter().flatten().collect())
 }
 
 fn gh_api_json<T: for<'de> Deserialize<'de>>(endpoint: &str) -> Result<T> {
@@ -228,6 +255,10 @@ mod tests {
         assert_eq!(
             normalize_project_id("git@github.com:owner/repo.git").owner_repo,
             "owner/repo"
+        );
+        assert_eq!(
+            normalize_project_id("owner/repo.git.git").owner_repo,
+            "owner/repo.git"
         );
     }
 

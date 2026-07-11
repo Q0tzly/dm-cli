@@ -7,7 +7,7 @@ subshell, records access history, and helps clean stale build caches such as
 
 ## Requirements
 
-- Rust 1.95+
+- Rust 1.85+
 - `gh` (GitHub CLI)
 - `ghq`
 - `fzf` optional; `rem` falls back to numbered prompts when it is unavailable
@@ -30,24 +30,26 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
 rem
 ```
 
-Opens the interactive repository dashboard showing managed projects with their
-git status (dirty/ahead/behind), cache size, and last access age. Select a
-project with `fzf` (or a numbered prompt) to open it.
+Shows an ASCII dashboard with the number of tracked and activated projects and
+the main commands. Use `rem list --size` or `rem status` for detailed git,
+cache, and access information, then `rem open` to select a local repository.
 
 ### Commands
 
 | Command | Alias | Description |
 |---|---|---|
 | `rem open [project]` | `o` | Open a project in a subshell. Without a project, shows managed projects first, then falls back to GitHub API. |
-| `rem list` | `l` | Print repositories. Use `--all` / `-a` to include remote repos from GitHub. |
+| `rem list` | `l` | Print repositories. Use `--remote` / `-r` to include remote repos from GitHub. `--size` / `-s` adds cache, age, and git counts; `--log` / `-L` sorts by recent access. |
 | `rem status` | `s` | Show git status (dirty/ahead/behind) of all managed projects. |
+| `rem get [project]` | `g` | Clone and activate a remote repository. |
 | `rem sync` | `sy` | Pull latest changes (`--ff-only`) in activated projects. |
 | `rem close <project>` | `c` | Close a project, remove cache directories, mark as local. Blocks if uncommitted changes or unpushed commits exist. |
+| `rem close --all` | — | Close all activated projects. |
 | `rem clean` | — | Remove cache directories (`target`, `node_modules`) from projects older than the configured threshold. `--all` cleans all projects. `--yes` skips confirmation. |
 | `rem prune` | `p` | Remove from the project list any projects whose directories no longer exist. |
 | `rem log` | `h` | Show project access history sorted by last access time. |
 | `rem config` | `cfg` | Show the config file path and contents. `--edit` opens it in `$EDITOR`. |
-| `rem init <shell>` | — | Generate shell completion script (`bash`, `zsh`, `fish`, `powershell`, `elvish`). |
+| `rem init <shell>` | — | Generate shell completions and the `close` wrapper (`bash`, `zsh`, `fish`, `powershell`, `elvish`). |
 
 ### Examples
 
@@ -63,11 +65,17 @@ rem o owner/repo
 # List projects
 rem list
 rem l
-rem list --all
+rem list --remote
+rem list --size
+rem list --log
 
 # Show git status of all managed projects
 rem status
 rem s
+
+# Clone and activate a remote project
+rem get owner/repo
+rem g owner/repo
 
 # Sync activated projects
 rem sync
