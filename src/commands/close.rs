@@ -94,8 +94,8 @@ fn close_all_activated(store: &ProjectStore, config: &Config, yes: bool) -> Resu
     }
 
     let parts: Vec<_> = [
-        Some(format!("{closed} closed")).filter(|_| closed > 0),
-        Some(format!("{errors} failed")).filter(|_| errors > 0),
+        (closed > 0).then(|| format!("{closed} closed")),
+        (errors > 0).then(|| format!("{errors} failed")),
     ]
     .into_iter()
     .flatten()

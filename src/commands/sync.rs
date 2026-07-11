@@ -49,8 +49,8 @@ pub fn sync_projects(store: &ProjectStore) -> Result<()> {
     bar.finish_and_clear();
 
     let parts = vec![
-        Some(format!("{ok} updated")).filter(|_| ok > 0),
-        Some(format!("{fail} failed")).filter(|_| fail > 0),
+        (ok > 0).then(|| format!("{ok} updated")),
+        (fail > 0).then(|| format!("{fail} failed")),
     ];
     let summary: Vec<_> = parts.into_iter().flatten().collect();
     if summary.is_empty() {
