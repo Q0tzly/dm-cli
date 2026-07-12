@@ -89,25 +89,33 @@ default model.
 Example:
 
 ```toml
+cache_targets = ["target", "node_modules", ".next/cache"]
+
 [cleanup]
 max_cache_size = "50GiB"
 target_cache_size = "35GiB"
 minimum_inactive = "7d"
 check_interval = "24h"
+active_lease_timeout = "2h"
 
-cache_targets = [
-  "target",
-  "node_modules",
-  ".next/cache",
-]
-
-protected = [
-  "owner/expensive-to-build",
-]
+protected = ["owner/expensive-to-build"]
 ```
 
-When total managed cache exceeds `max_cache_size`, `repom` selects eligible caches in least
-recently used order until the total reaches `target_cache_size`.
+When total managed cache exceeds `max_cache_size`, `repom` selects eligible cache targets in
+least recently used order, weighted by reclaim score, until the total reaches
+`target_cache_size`. Selection and deletion happen at the configured target level: cleaning
+`target` must not remove an unrelated `node_modules` or `.next/cache` directory in the same
+project.
+
+The initial reclaim score is deliberately explainable:
+
+```text
+reclaim_score = cache_size_bytes × (inactive_days + 1)
+```
+
+This allows a large cache that has been unused for a reasonable period to outrank a tiny cache
+that has merely been unused for longer. The score is a heuristic, not a claim about the actual
+cost of rebuilding a project.
 
 Candidate selection should consider:
 
@@ -116,7 +124,7 @@ Candidate selection should consider:
 - Whether the project is protected.
 - Whether the project appears to be in use.
 - The minimum inactivity period.
-- The cost of regenerating a cache, where known.
+- The estimated cost of regenerating a cache, where known.
 
 ## Usage detection
 
@@ -135,8 +143,11 @@ Possible hooks:
 - fish: `PWD` variable event
 - bash: `PROMPT_COMMAND`
 
-The hook should be fast, rate-limited, and should not print during normal shell use. It can also
-trigger a background maintenance check at most once per configured interval.
+The hook should be fast, rate-limited, and should not print during normal shell use. When entering
+an untracked GitHub repository, it should add a Local inventory entry rather than losing that usage
+signal. It can also trigger a background maintenance check at most once per configured interval;
+the start time must be recorded before spawning work so repeated prompts cannot race into several
+GC processes.
 
 ## Cleanup flow
 
@@ -219,11 +230,14 @@ Every automatic action should support:
 
 - Only explicitly configured relative cache paths may be removed.
 - Canonicalized targets must remain inside the repository root.
-- Symlinks must not allow deletion outside the repository.
+- A configured target must never be the repository root itself.
+- Configured cache targets must not traverse symlinks, even when the resolved path remains inside
+  the repository.
 - Recently used, protected, or actively leased projects must not be cleaned automatically.
 - Source trees and repositories must never be deleted as part of cache cleanup.
 - The first automatic-cleanup setup should run in suggestion or dry-run mode.
-- Cleanup history must include the project, target, size, time, and triggering policy.
+- Cleanup history must include the project, target, size, time, and triggering policy. Existing
+  history entries without target details should remain readable after schema updates.
 
 Uncommitted Git changes are not by themselves a reason to retain a validated build cache. The
 stronger safety boundary is proving that only reproducible targets can be removed. This statement
@@ -266,6 +280,10 @@ rem sync --all              Synchronize selected or managed projects
 rem scan                    Recalculate cache inventory
 rem gc --dry-run            Show the policy cleanup plan
 rem gc                      Apply the cleanup plan
+rem auto status             Show scheduler and automation status
+rem auto enable             Install a platform scheduler
+rem auto disable            Remove the platform scheduler
+rem auto run                Run one automatic cleanup pass
 rem protect <query>         Exclude a project from automatic cleanup
 rem unprotect <query>       Remove protection
 rem forget <query>          Remove stale metadata, not source files
@@ -277,10 +295,18 @@ rem config edit             Edit configuration
 The exact names remain open. The important rule is that project resolution and safety behavior
 remain consistent across commands.
 
+The shell integration maintains a short-lived lease for the current project session. Leases are
+identified by a shell-provided session ID and expire after `active_lease_timeout`; an expired
+lease cannot permanently prevent cleanup if a terminal disappears without running an exit hook.
+
 Several proposed names differ from the current CLI (`clean` to `gc`, `prune` to `forget`, and
 `log` to `history`). Because these are breaking changes, implementation must choose an explicit
 migration policy: preserve the old names as aliases with deprecation messaging, introduce the new
 commands alongside them, or make a documented clean break before 1.0.
+
+The first migration keeps `clean` as a compatibility entry point that delegates to `gc`. This
+prevents the old command from applying a different cleanup policy while existing scripts and user
+habits continue to work.
 
 ## Implementation stages
 
@@ -290,7 +316,14 @@ commands alongside them, or make a documented clean break before 1.0.
 4. Add protection, audit history, and selectable automation modes.
 5. Enable guarded automatic cleanup.
 6. Unify project resolution across open/get/status/sync/clean.
-7. Revisit background scheduling, active-session leases, and provider adapters.
+7. Add independent background scheduling, regeneration-cost scoring, and provider adapters.
+
+The first scheduler implementation uses launchd on macOS and a systemd user timer on Linux. The
+scheduled command is the same `rem auto run` path used for manual verification, so the policy and
+safety checks remain centralized. Its cadence is derived from `cleanup.check_interval`, and it is
+enabled only after the user explicitly sets `automation.clean = "auto"` and configures a budget.
+At this stage the automatic runner is intentionally limited to cache cleanup; policy values for
+sync, clone, and metadata removal do not yet authorize those actions automatically.
 
 ## Open decisions
 
@@ -299,8 +332,9 @@ commands alongside them, or make a documented clean break before 1.0.
   session leases plus policy-driven GC.
 - How existing command names migrate to the proposed `gc`, `forget`, and `history` vocabulary.
 - Whether automatic cleanup is opt-in globally or enabled after an initial dry-run period.
-- How active shell sessions advertise a temporary lease on a project.
-- Whether cache regeneration cost should influence cleanup order in the first version.
+- Whether the lease timeout and prompt heartbeat are appropriate for long-running builds.
+- Whether project-specific cache regeneration cost should replace or adjust the initial reclaim
+  score.
 - Whether `ghq` remains required or repository roots can be configured directly.
 - Whether non-GitHub providers should be supported through adapters later.
 - Which project operations belong in the coherent `repom` workflow and which should remain direct
