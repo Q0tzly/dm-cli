@@ -46,6 +46,9 @@ pub fn scan_project_cache_size(project_root: &Path, targets: &[String]) -> Resul
 
 pub fn validate_cache_target(project_root: &Path, target: &str) -> Result<PathBuf> {
     let relative = Path::new(target);
+    if target.trim().is_empty() || relative == Path::new(".") {
+        bail!("cache target {target:?} must not be the project root");
+    }
     if relative.is_absolute() {
         bail!("cache target {target:?} must be relative");
     }
@@ -59,6 +62,7 @@ pub fn validate_cache_target(project_root: &Path, target: &str) -> Result<PathBu
 
     let root = fs::canonicalize(project_root)
         .with_context(|| format!("failed to canonicalize {}", project_root.display()))?;
+    reject_symlink_components(&root, relative, target)?;
     let candidate = root.join(relative);
     let canonical = if candidate.exists() {
         fs::canonicalize(&candidate)
@@ -74,31 +78,83 @@ pub fn validate_cache_target(project_root: &Path, target: &str) -> Result<PathBu
             root.display()
         );
     }
+    if canonical == root {
+        bail!("cache target {target:?} must not resolve to the project root");
+    }
 
     Ok(canonical)
+}
+
+fn reject_symlink_components(root: &Path, relative: &Path, target: &str) -> Result<()> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => current.push(part),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => continue,
+        }
+        if let Ok(metadata) = fs::symlink_metadata(&current)
+            && metadata.file_type().is_symlink()
+        {
+            bail!("cache target {target:?} must not traverse a symbolic link");
+        }
+    }
+    Ok(())
+}
+
+pub fn scan_cache_target_size(project_root: &Path, target: &str) -> Result<u64> {
+    scan_project_cache_size(project_root, &[target.to_string()])
+}
+
+pub fn clean_cache_target(project_root: &Path, target: &str) -> Result<u64> {
+    let target_path = validate_cache_target(project_root, target)?;
+    if !target_path.exists() {
+        return Ok(0);
+    }
+
+    let size = scan_cache_target_size(project_root, target)?;
+    if target_path.is_dir() {
+        fs::remove_dir_all(&target_path)
+            .with_context(|| format!("failed to remove {}", target_path.display()))?;
+    } else {
+        fs::remove_file(&target_path)
+            .with_context(|| format!("failed to remove {}", target_path.display()))?;
+    }
+    Ok(size)
 }
 
 pub fn clean_project(project_root: &Path, targets: &[String]) -> Result<u64> {
     let mut removed_bytes = 0;
 
     for target in targets {
-        let target_path = validate_cache_target(project_root, target)?;
-        if !target_path.exists() {
-            continue;
-        }
-
-        let size = scan_project_cache_size(project_root, std::slice::from_ref(target))?;
-        if target_path.is_dir() {
-            fs::remove_dir_all(&target_path)
-                .with_context(|| format!("failed to remove {}", target_path.display()))?;
-        } else {
-            fs::remove_file(&target_path)
-                .with_context(|| format!("failed to remove {}", target_path.display()))?;
-        }
-        removed_bytes += size;
+        removed_bytes += clean_cache_target(project_root, target)?;
     }
 
     Ok(removed_bytes)
+}
+
+pub fn parse_bytes(input: &str) -> Result<u64> {
+    let value = input.trim();
+    let split_at = value
+        .find(|character: char| !character.is_ascii_digit() && character != '.')
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split_at);
+    let number: f64 = number
+        .parse()
+        .with_context(|| format!("invalid byte size {input:?}"))?;
+    let multiplier = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1_u64,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024_u64.pow(2),
+        "g" | "gb" | "gib" => 1024_u64.pow(3),
+        "t" | "tb" | "tib" => 1024_u64.pow(4),
+        _ => bail!("unsupported byte size unit in {input:?}"),
+    };
+    let bytes = number * multiplier as f64;
+    if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
+        bail!("byte size out of range: {input:?}");
+    }
+    Ok(bytes.round() as u64)
 }
 
 pub fn refresh_cache_sizes(projects: &mut [Project], targets: &[String]) -> Result<()> {
@@ -181,6 +237,20 @@ mod tests {
 
         assert!(validate_cache_target(temp.path(), "/tmp").is_err());
         assert!(validate_cache_target(temp.path(), "../outside").is_err());
+        assert!(validate_cache_target(temp.path(), ".").is_err());
+        assert!(validate_cache_target(temp.path(), "").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_cache_targets_that_are_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("source")).unwrap();
+        symlink(temp.path().join("source"), temp.path().join("target")).unwrap();
+
+        assert!(validate_cache_target(temp.path(), "target").is_err());
     }
 
     #[test]
@@ -207,5 +277,27 @@ mod tests {
         assert_eq!(removed, 16);
         assert!(!temp.path().join("target").exists());
         assert!(temp.path().join("Cargo.toml").exists());
+    }
+
+    #[test]
+    fn clean_cache_target_leaves_other_targets_intact() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("target")).unwrap();
+        fs::write(temp.path().join("target/artifact.bin"), [0; 16]).unwrap();
+        fs::create_dir(temp.path().join("node_modules")).unwrap();
+        fs::write(temp.path().join("node_modules/package.bin"), [0; 32]).unwrap();
+
+        let removed = clean_cache_target(temp.path(), "target").unwrap();
+
+        assert_eq!(removed, 16);
+        assert!(!temp.path().join("target").exists());
+        assert!(temp.path().join("node_modules/package.bin").exists());
+    }
+
+    #[test]
+    fn parses_human_readable_byte_sizes() {
+        assert_eq!(parse_bytes("50GiB").unwrap(), 50 * 1024_u64.pow(3));
+        assert_eq!(parse_bytes("1.5MiB").unwrap(), 1_572_864);
+        assert!(parse_bytes("50 bananas").is_err());
     }
 }

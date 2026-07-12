@@ -118,6 +118,25 @@ pub fn normalize_project_id(input: &str) -> RepoSelection {
     }
 }
 
+pub fn project_id_from_path(path: &Path) -> Result<Option<String>> {
+    if let Some(repository) = local_repo_from_path(path) {
+        return Ok(Some(repository.id));
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .with_context(|| format!("failed to inspect git remote in {}", path.display()))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let remote = String::from_utf8(output.stdout).context("git remote output was not UTF-8")?;
+    Ok(github_project_id_from_remote(remote.trim()))
+}
+
 fn github_owners() -> Result<Vec<String>> {
     let user: Login = gh_api_json("user")?;
     let orgs: Vec<Login> = gh_api_json("user/orgs")?;
@@ -235,6 +254,25 @@ fn local_repo_from_path(path: &Path) -> Option<LocalRepo> {
     })
 }
 
+fn github_project_id_from_remote(remote: &str) -> Option<String> {
+    let owner_repo = remote
+        .strip_prefix("https://github.com/")
+        .or_else(|| remote.strip_prefix("http://github.com/"))
+        .or_else(|| remote.strip_prefix("git@github.com:"))
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))?;
+    let owner_repo = owner_repo
+        .strip_suffix(".git")
+        .unwrap_or(owner_repo)
+        .trim_matches('/');
+    let mut parts = owner_repo.split('/');
+    let owner = parts.next()?;
+    let repository = parts.next()?;
+    if owner.is_empty() || repository.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some(format!("github.com/{owner}/{repository}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +297,22 @@ mod tests {
         assert_eq!(
             normalize_project_id("owner/repo.git.git").owner_repo,
             "owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn identifies_supported_github_remote_urls() {
+        assert_eq!(
+            github_project_id_from_remote("git@github.com:acme/app.git"),
+            Some("github.com/acme/app".to_string())
+        );
+        assert_eq!(
+            github_project_id_from_remote("https://github.com/acme/app"),
+            Some("github.com/acme/app".to_string())
+        );
+        assert_eq!(
+            github_project_id_from_remote("https://gitlab.com/acme/app"),
+            None
         );
     }
 

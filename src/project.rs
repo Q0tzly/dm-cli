@@ -9,6 +9,8 @@ pub struct Project {
     pub last_accessed_at: DateTime<Utc>,
     pub cache_size_bytes: Option<u64>,
     #[serde(default)]
+    pub protected: bool,
+    #[serde(default)]
     pub status: ProjectStatus,
 }
 
@@ -27,6 +29,7 @@ impl Project {
             path,
             last_accessed_at: Utc::now(),
             cache_size_bytes: None,
+            protected: false,
             status: ProjectStatus::Activated,
         }
     }
