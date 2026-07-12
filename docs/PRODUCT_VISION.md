@@ -289,8 +289,14 @@ rem unprotect <query>       Remove protection
 rem forget <query>          Remove stale metadata, not source files
 rem history                 Show maintenance history
 rem doctor                  Diagnose hooks, tools, and configuration
-rem config edit             Edit configuration
+rem config --edit           Edit configuration
+rem config --update         Migrate configuration with a backup
 ```
+
+Configuration files carry a schema version independent of the repom package version. A schema
+change produces a visible update notice, while ordinary patch releases do not. Explicit migration
+preserves existing values, fills newly introduced defaults, and saves the original file as a
+backup before rewriting it.
 
 The exact names remain open. The important rule is that project resolution and safety behavior
 remain consistent across commands.

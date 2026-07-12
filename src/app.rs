@@ -11,6 +11,11 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let paths = crate::paths::XdgPathProvider;
     let config = Config::load(&paths)?;
+    if crate::config::config_path(&paths)?.exists()
+        && let Some(notice) = config.update_notice()
+    {
+        eprintln!("{notice}");
+    }
     let store = ProjectStore::new(&paths)?;
 
     match cli.command {
@@ -35,7 +40,9 @@ pub fn run() -> Result<()> {
         Some(Command::Status { all }) => commands::status::status_projects(&store, &config, all),
         Some(Command::Get { project }) => commands::get::get_project(project, &store),
         Some(Command::Sync) => commands::sync::sync_projects(&store),
-        Some(Command::Config { edit }) => commands::config::show_config(&paths, edit),
+        Some(Command::Config { edit, update }) => {
+            commands::config::show_config(&paths, edit, update)
+        }
         Some(Command::Prune { yes }) => commands::prune::prune_projects(&store, yes),
         Some(Command::Protect { project }) => {
             commands::protect::set_protected(&store, &project, true)

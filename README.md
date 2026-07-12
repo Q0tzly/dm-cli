@@ -58,7 +58,7 @@ cache, and access information, then `rem open` to select a local repository.
 | `rem doctor` | — | Check local tools and cache configuration. |
 | `rem prune` | `p`, `forget` | Remove from the project list any projects whose directories no longer exist. |
 | `rem log` | `h` | Show project access history sorted by last access time. |
-| `rem config` | `cfg` | Show the config file path and contents. `--edit` opens it in `$EDITOR`. |
+| `rem config` | `cfg` | Show config. `--edit` opens it; `--update` migrates it with a backup. |
 | `rem init <shell>` | — | Generate shell completions and the `close` wrapper (`bash`, `zsh`, `fish`, `powershell`, `elvish`). |
 
 ### Examples
@@ -121,6 +121,7 @@ rem h
 # Configuration
 rem config
 rem config --edit
+rem config --update
 
 # Shell init
 eval "$(rem init bash)"
@@ -153,6 +154,7 @@ or unpushed commits. Commit, stash, or push before closing.
 Example config:
 
 ```toml
+config_version = 1
 cache_targets = ["target", "node_modules"]
 older_than = "14d"
 
@@ -172,6 +174,11 @@ sync = "ask"
 clone = "ask"
 forget = "ask"
 ```
+
+`config_version` tracks the configuration schema rather than the application release. When a new
+repom version requires a config migration, commands print an update notice. Run
+`rem config --update` to merge new defaults into the existing values; the previous file is saved as
+`config.toml.bak`. A missing config file can also be materialized with the same command.
 
 The current automatic runner performs cache cleanup only. The other capability modes reserve a
 consistent policy surface for future project operations and do not trigger network or metadata

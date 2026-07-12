@@ -118,8 +118,12 @@ pub enum Command {
     #[command(alias = "cfg")]
     Config {
         /// Open the config file in $EDITOR.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "update")]
         edit: bool,
+
+        /// Update the config to the current schema, preserving a backup.
+        #[arg(long, conflicts_with = "edit")]
+        update: bool,
     },
     /// Remove projects whose directories no longer exist.
     #[command(aliases = ["p", "forget"])]

@@ -5,8 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
+    #[serde(default)]
+    pub config_version: u32,
     #[serde(default = "default_cache_targets")]
     pub cache_targets: Vec<String>,
     #[serde(default = "default_older_than")]
@@ -62,6 +66,7 @@ pub struct AutomationConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            config_version: CURRENT_CONFIG_VERSION,
             cache_targets: default_cache_targets(),
             older_than: default_older_than(),
             cleanup: CleanupConfig::default(),
@@ -125,7 +130,29 @@ impl Config {
 
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config file {}", path.display()))?;
-        toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
+        let config: Self =
+            toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
+        if config.config_version > CURRENT_CONFIG_VERSION {
+            anyhow::bail!(
+                "config schema {} is newer than supported schema {}; upgrade rem before continuing",
+                config.config_version,
+                CURRENT_CONFIG_VERSION
+            );
+        }
+        Ok(config)
+    }
+
+    pub fn is_outdated(&self) -> bool {
+        self.config_version < CURRENT_CONFIG_VERSION
+    }
+
+    pub fn update_notice(&self) -> Option<String> {
+        self.is_outdated().then(|| {
+            format!(
+                "Config update available (schema {} -> {}). Run `rem config --update`; the existing file will be backed up.",
+                self.config_version, CURRENT_CONFIG_VERSION
+            )
+        })
     }
 }
 
@@ -147,6 +174,7 @@ mod tests {
         };
 
         assert_eq!(Config::load(&paths).unwrap(), Config::default());
+        assert_eq!(Config::default().config_version, CURRENT_CONFIG_VERSION);
     }
 
     #[test]
@@ -182,5 +210,23 @@ clean = "auto"
         assert_eq!(config.cleanup.max_cache_size.as_deref(), Some("50GiB"));
         assert_eq!(config.cleanup.minimum_inactive, "7d");
         assert_eq!(config.automation.clean, AutomationMode::Auto);
+        assert!(config.is_outdated());
+    }
+
+    #[test]
+    fn rejects_config_from_a_newer_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = FixedPathProvider {
+            data: temp.path().join("data"),
+            config: temp.path().join("config"),
+        };
+        fs::create_dir_all(&paths.config).unwrap();
+        fs::write(
+            paths.config.join("config.toml"),
+            format!("config_version = {}\n", CURRENT_CONFIG_VERSION + 1),
+        )
+        .unwrap();
+
+        assert!(Config::load(&paths).is_err());
     }
 }

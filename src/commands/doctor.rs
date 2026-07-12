@@ -1,5 +1,5 @@
 use crate::cache::parse_bytes;
-use crate::config::{AutomationMode, Config};
+use crate::config::{AutomationMode, CURRENT_CONFIG_VERSION, Config};
 use crate::duration::parse_age;
 use crate::paths::XdgPathProvider;
 use crate::select::command_exists;
@@ -58,6 +58,12 @@ pub fn run_doctor(paths: &XdgPathProvider, config: &Config) -> Result<()> {
 
 fn config_issues(config: &Config) -> Vec<String> {
     let mut issues = Vec::new();
+    if config.is_outdated() {
+        issues.push(format!(
+            "config schema {} is outdated; run `rem config --update` for schema {}",
+            config.config_version, CURRENT_CONFIG_VERSION
+        ));
+    }
     if config.cache_targets.is_empty() {
         issues.push("cache_targets must include at least one relative path".to_string());
     }
