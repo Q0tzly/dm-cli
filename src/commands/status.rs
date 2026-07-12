@@ -1,10 +1,14 @@
-use crate::cache::{format_bytes, progress_bar, refresh_cache_sizes};
+use crate::cache::{
+    format_bytes, parse_bytes, progress_bar, refresh_cache_sizes, scan_cache_target_size,
+};
 use crate::config::Config;
+use crate::duration::parse_age;
 use crate::git::{compute_git_counts, compute_git_counts_for_paths};
 use crate::github::list_local_repositories;
 use crate::project::{Project, ProjectStatus};
 use crate::store::ProjectStore;
 use anyhow::Result;
+use chrono::Utc;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -44,6 +48,9 @@ pub fn status_projects(store: &ProjectStore, config: &Config, all: bool) -> Resu
     let mut projects = store.load()?;
     refresh_cache_sizes(&mut projects, &config.cache_targets)?;
     store.save(&projects)?;
+    if !projects.is_empty() {
+        print_cache_summary(&projects, config, store)?;
+    }
 
     if all {
         let local_repos = list_local_repositories()?;
@@ -153,4 +160,135 @@ fn project_status(status: ProjectStatus) -> String {
         ProjectStatus::Local => "Local",
     }
     .to_string()
+}
+
+fn print_cache_summary(projects: &[Project], config: &Config, store: &ProjectStore) -> Result<()> {
+    let total = projects
+        .iter()
+        .map(|project| project.cache_size_bytes.unwrap_or(0))
+        .sum::<u64>();
+    let protected = projects
+        .iter()
+        .filter(|project| {
+            project.protected
+                || config
+                    .cleanup
+                    .protected
+                    .iter()
+                    .any(|value| value == &project.id || value == project.owner_repo())
+        })
+        .map(|project| project.cache_size_bytes.unwrap_or(0))
+        .sum::<u64>();
+
+    if let Some(maximum) = config
+        .cleanup
+        .max_cache_size
+        .as_deref()
+        .map(parse_bytes)
+        .transpose()?
+    {
+        println!(
+            "Workspace cache: {} / {} budget",
+            format_bytes(total),
+            format_bytes(maximum)
+        );
+    } else {
+        println!("Workspace cache: {}", format_bytes(total));
+    }
+    println!("Protected cache: {}", format_bytes(protected));
+    let (reclaimable, target_count) = reclaimable_cache_summary(projects, config, store)?;
+    println!(
+        "Reclaimable cache: {} across {} target(s)",
+        format_bytes(reclaimable),
+        target_count
+    );
+    if let Some(last_cleanup) = store.load_history()?.last() {
+        println!(
+            "Last cleanup: {} ({}, {})",
+            last_cleanup.completed_at.format("%Y-%m-%d %H:%M"),
+            format_bytes(last_cleanup.reclaimed_bytes),
+            last_cleanup.reason
+        );
+    }
+    Ok(())
+}
+
+fn reclaimable_cache_summary(
+    projects: &[Project],
+    config: &Config,
+    store: &ProjectStore,
+) -> Result<(u64, usize)> {
+    let cutoff = Utc::now() - parse_age(&config.cleanup.minimum_inactive)?;
+    let active_project_ids =
+        store.active_project_ids(parse_age(&config.cleanup.active_lease_timeout)?)?;
+    let mut reclaimable_bytes = 0;
+    let mut target_count = 0;
+
+    for project in projects {
+        if project.protected
+            || config
+                .cleanup
+                .protected
+                .iter()
+                .any(|value| value == &project.id || value == project.owner_repo())
+            || active_project_ids.contains(&project.id)
+            || !project.path.exists()
+            || project.last_accessed_at >= cutoff
+        {
+            continue;
+        }
+
+        for target in &config.cache_targets {
+            let bytes = scan_cache_target_size(&project.path, target)?;
+            if bytes > 0 {
+                reclaimable_bytes += bytes;
+                target_count += 1;
+            }
+        }
+    }
+
+    Ok((reclaimable_bytes, target_count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+    use std::fs;
+
+    #[test]
+    fn summarizes_only_inactive_unprotected_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_path = temp.path().join("old");
+        fs::create_dir_all(old_path.join("target")).unwrap();
+        fs::write(old_path.join("target/artifact"), [0; 10]).unwrap();
+        fs::create_dir_all(old_path.join("node_modules")).unwrap();
+        fs::write(old_path.join("node_modules/package"), [0; 20]).unwrap();
+
+        let recent_path = temp.path().join("recent");
+        fs::create_dir_all(recent_path.join("target")).unwrap();
+        fs::write(recent_path.join("target/artifact"), [0; 30]).unwrap();
+
+        let protected_path = temp.path().join("protected");
+        fs::create_dir_all(protected_path.join("target")).unwrap();
+        fs::write(protected_path.join("target/artifact"), [0; 40]).unwrap();
+
+        let mut old = Project::new("old/repo", old_path);
+        old.last_accessed_at = Utc::now() - Duration::days(2);
+        let mut recent = Project::new("recent/repo", recent_path);
+        recent.last_accessed_at = Utc::now();
+        let mut protected = Project::new("protected/repo", protected_path);
+        protected.protected = true;
+        protected.last_accessed_at = Utc::now() - Duration::days(2);
+        let projects = vec![old, recent, protected];
+
+        let mut config = Config::default();
+        config.cleanup.minimum_inactive = "1d".to_string();
+        let store = ProjectStore::at(temp.path().join("projects.json"));
+
+        assert_eq!(
+            reclaimable_cache_summary(&projects, &config, &store).unwrap(),
+            (30, 2)
+        );
+    }
 }

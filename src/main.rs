@@ -8,6 +8,7 @@ mod git;
 mod github;
 mod paths;
 mod project;
+mod scheduler;
 mod select;
 mod shell;
 mod store;

@@ -1,15 +1,29 @@
+use crate::config::AutomationMode;
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "rem",
     version,
-    about = "Context-aware repository manager for GitHub projects"
+    about = "Local project and cache lifecycle manager"
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AutoCommand {
+    /// Show scheduler and automatic cleanup status.
+    Status,
+    /// Install the platform scheduler for daily automatic cleanup.
+    Enable,
+    /// Remove the platform scheduler.
+    Disable,
+    /// Run one automatic cleanup pass immediately.
+    Run,
 }
 
 #[derive(Debug, Subcommand)]
@@ -49,7 +63,7 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Remove cache directories from managed repositories.
+    /// Compatibility alias for `gc`.
     Clean {
         /// Clean all managed repositories regardless of age.
         #[arg(long)]
@@ -58,6 +72,31 @@ pub enum Command {
         /// Skip confirmation prompts.
         #[arg(long)]
         yes: bool,
+    },
+    /// Scan local repositories and refresh cache inventory.
+    Scan,
+    /// Apply or preview the cache cleanup policy.
+    Gc {
+        /// Only show the cleanup plan.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Include recently used projects in an explicit cleanup plan.
+        #[arg(long)]
+        all: bool,
+
+        /// Skip confirmation in ask mode.
+        #[arg(long)]
+        yes: bool,
+
+        /// Override the configured automation mode.
+        #[arg(long, value_enum)]
+        mode: Option<AutomationMode>,
+    },
+    /// Manage scheduler-backed automatic cleanup.
+    Auto {
+        #[command(subcommand)]
+        action: AutoCommand,
     },
     /// Show git status of managed repositories.
     #[command(alias = "s")]
@@ -83,12 +122,20 @@ pub enum Command {
         edit: bool,
     },
     /// Remove projects whose directories no longer exist.
-    #[command(alias = "p")]
+    #[command(aliases = ["p", "forget"])]
     Prune {
         /// Skip confirmation prompts.
         #[arg(long)]
         yes: bool,
     },
+    /// Protect a project from automatic cache cleanup.
+    Protect { project: String },
+    /// Remove a project from the protected list.
+    Unprotect { project: String },
+    /// Show cache cleanup history.
+    History,
+    /// Diagnose local tools and configuration.
+    Doctor,
     /// Show project access history.
     #[command(alias = "h")]
     Log,
@@ -96,5 +143,15 @@ pub enum Command {
     Init {
         /// Shell to generate completions for.
         shell: Shell,
+    },
+    /// Record the current directory as recently used (for shell integration).
+    #[command(hide = true)]
+    Touch {
+        /// Directory to record; defaults to the current directory.
+        path: Option<PathBuf>,
+
+        /// Suppress all output.
+        #[arg(long)]
+        quiet: bool,
     },
 }

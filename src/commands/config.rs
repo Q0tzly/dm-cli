@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::config::config_path;
 use crate::paths::XdgPathProvider;
 use anyhow::{Context, Result};
@@ -26,11 +27,11 @@ pub fn show_config(paths: &XdgPathProvider, edit: bool) -> Result<()> {
         print!("{raw}");
     } else {
         println!("(default configuration)");
-        println!(
-            "cache_targets = {:?}",
-            crate::config::default_cache_targets()
+        print!(
+            "{}",
+            toml::to_string_pretty(&Config::default())
+                .context("failed to serialize default configuration")?
         );
-        println!("older_than = \"14d\"");
     }
     Ok(())
 }
